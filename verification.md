@@ -1,3 +1,12 @@
+# GitHub 仓库检查与 CI 测试修正
+
+日期：2026-10-12。检查远端 main 提交 dc7aa0e59eb1194a3ace7a97954b72fcdec20a7e。
+
+- 43 个项目文件及全部目录已上传，包括 .github、两种架构的采集程序、源码和固定安装入口。没有发现实际 .env、SQLite 数据库或节点配置文件。
+- Actions 38222310810：Node 主控测试、Go 测试/vet、Bash 语法及 ShellCheck 通过；安装器隔离测试失败，Docker 构建被跳过。
+- 隔离测试的 mock curl 错误地将最后一个参数视为 URL，而真实下载命令最后一个参数是 -o 的输出路径。已改成逐个解析 URL 和输出参数，本机 ShellCheck 通过。
+- 修正尚需上传并由 GitHub Linux CI 重新验证；当前不能将 Docker 构建或完整安装流程标为通过。
+
 # 固定安装入口补充验证
 
 日期：2026-10-12。

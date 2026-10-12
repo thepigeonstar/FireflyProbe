@@ -14,15 +14,23 @@ tar -czf "$scratch/source.tar.gz" -C "$scratch" source
 cat > "$scratch/mock/curl" <<'MOCK'
 #!/usr/bin/env bash
 set -euo pipefail
-url=${!#}
+url=''
+output=''
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -o) output=$2; shift 2 ;;
+    -w|--proto|--proto-redir|--tlsv1.2|--connect-timeout|--max-time)
+      if [[ "$1" == --tlsv1.2 ]]; then shift; else shift 2; fi
+      ;;
+    https://*) url=$1; shift ;;
+    *) shift ;;
+  esac
+done
+[[ -n "$url" ]] || { echo 'Mock curl received no URL.' >&2; exit 2; }
 if [[ "$url" == */releases/latest ]]; then
   [[ "$TEST_RELEASE" != network-error ]] || exit 7
   printf '%s' "$TEST_RELEASE"
 else
-  output=''
-  while [[ $# -gt 0 ]]; do
-    if [[ "$1" == -o ]]; then output=$2; shift 2; else shift; fi
-  done
   printf '%s\n' "$url" >> "$TEST_TRACE"
   cp "$TEST_ARCHIVE" "$output"
 fi
