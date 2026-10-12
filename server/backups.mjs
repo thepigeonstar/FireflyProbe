@@ -17,7 +17,12 @@ export function createBackups(getDB,dataDir,getSettings) {
       return list().find(x=>x.name===name);
     }catch(e){rmSync(file,{force:true});throw e;}finally{busy=false;pending='';}
   }
-  return {directory,list,create,get busy(){return busy;}};
+  function remove(name){
+    if(busy){const e=new Error('备份正在创建，请稍后删除');e.status=409;throw e;}
+    if(!backupName.test(name)||!list().some(row=>row.name===name)){const e=new Error('备份不存在');e.status=404;throw e;}
+    rmSync(join(directory,name));rmSync(join(directory,name+'.ready'),{force:true});
+  }
+  return {directory,list,create,remove,get busy(){return busy;}};
 }
 export async function receiveRestore(req,file) {
   let bytes=0;

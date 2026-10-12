@@ -341,7 +341,7 @@ export async function createApp(options = {}) {
         const sshRoute=/^\/api\/nodes\/([a-f0-9-]{36})\/ssh\/(probe|trust|test|deploy)$/.exec(path);
         if(sshRoute&&method==='POST'){const [unused,id,action]=sshRoute;if(action==='probe')return send(res,200,await ssh.probe(id));if(action==='trust'){const input=await body(req);ssh.trust(id,input.fingerprint);return send(res,200,{ok:true});}if(action==='test')return send(res,200,await ssh.test(id));return send(res,202,ssh.deploy(id));}
         const jobRoute=/^\/api\/ssh\/jobs\/([a-f0-9-]{36})$/.exec(path);if(jobRoute&&method==='GET')return send(res,200,ssh.status(jobRoute[1]));
-        if(path==='/api/nodes'&&method==='GET') {const rates=fx.read();const {rates:unused,...fxInfo}=rates;return send(res,200,{nodes:snapshot(),settings:safeSettings(),cost_summary:costSummary(getNodes(),rates),fx_info:fxInfo,server_time:now(),version:'0.2.4',agent_version:'0.2.0'});}
+        if(path==='/api/nodes'&&method==='GET') {const rates=fx.read();const {rates:unused,...fxInfo}=rates;return send(res,200,{nodes:snapshot(),settings:safeSettings(),cost_summary:costSummary(getNodes(),rates),fx_info:fxInfo,server_time:now(),version:'0.2.5',agent_version:'0.2.0'});}
         const adminNetwork=/^\/api\/nodes\/([a-f0-9-]{36})\/network-history$/.exec(path);if(adminNetwork&&method==='GET')return send(res,200,publicHistory(adminNetwork[1],true));
         if(path==='/api/network/history'&&method==='GET')return send(res,200,publicHistory('network',true));
         if(path==='/api/costs'&&method==='GET')return send(res,200,{...costSummary(getNodes(),fx.read()),fx:fx.read()});
@@ -349,6 +349,7 @@ export async function createApp(options = {}) {
         if(path==='/api/backups'&&method==='GET')return send(res,200,backups.list());
         if(path==='/api/backups'&&method==='POST'){for(const [id,l] of latest){flushMinute(id,l);db.prepare('UPDATE nodes SET last_seen=?,last_version=? WHERE id=?').run(l.received,l.metrics.version,id);}return send(res,201,await backups.create());}
         const download=/^\/api\/backups\/([^/]+)$/.exec(path);
+        if(download&&method==='DELETE'){backups.remove(download[1]);return send(res,200,{ok:true});}
         if(download&&method==='GET'){if(!backupName.test(download[1])||!backups.list().some(x=>x.name===download[1]))fail(404,'备份不存在');const file=join(backups.directory,download[1]);res.setHeader('Content-Type','application/vnd.sqlite3');res.setHeader('Content-Disposition',`attachment; filename="${download[1]}"`);res.setHeader('Content-Length',statSync(file).size);await pipeline(createReadStream(file),res);return;}
         if(path==='/api/backups/restore'&&method==='POST'){await restoreBackup(req);fx.refresh().catch(()=>{});res.setHeader('Set-Cookie','lp_session=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0');return send(res,200,{ok:true,message:'备份已恢复，请重新登录',redirect_admin:settings.admin_path});}
         if(path==='/api/nodes'&&method==='POST') {
@@ -377,7 +378,7 @@ export async function createApp(options = {}) {
         }
         if(path==='/api/settings'&&method==='GET') return send(res,200,editableSettings());
         if(path==='/api/settings'&&method==='PUT') {const input=await body(req),updated=settingsFields(input,settings);if(input.notification_targets!==undefined){const reportChanged=JSON.stringify(settings.notification_targets?.report??null)!==JSON.stringify(updated.notification_targets.report);for(const job of db.prepare("SELECT id,event_key FROM outbox WHERE status='pending'").all()){const [kind,id]=job.event_key.split(':'),type=({quota:'quota',offline:'offline',recovery:'offline',resource:'resource','resource-recovery':'resource',expiry:'expiry',expired:'expiry'})[kind];if((kind==='daily'&&reportChanged)||(type&&!notificationSelected(updated,type,id)))db.prepare("UPDATE outbox SET event_key=event_key||?,status='failed',error='通知服务器范围调整，已取消待发送通知' WHERE id=?").run(':scope-'+randomUUID(),job.id);}}db.prepare("INSERT INTO settings VALUES('config',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value").run(JSON.stringify(updated));const pathChanged=settings.admin_path!==updated.admin_path;settings=updated;publicCache=null;publicHistoryCache.clear();if(pathChanged){sessions.clear();res.setHeader('Set-Cookie','lp_session=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0');}return send(res,200,{...editableSettings(),redirect_admin:pathChanged?settings.admin_path:undefined});}
-        if(path==='/api/notifications'&&method==='GET') return send(res,200,db.prepare('SELECT id,status,attempts,created,sent,error FROM outbox ORDER BY id DESC LIMIT 30').all());
+        if(path==='/api/notifications'&&method==='GET') return send(res,200,db.prepare('SELECT id,status,attempts,created,sent,error FROM outbox ORDER BY id DESC LIMIT 5').all());
         if(path==='/api/notifications/test'&&method==='POST') {if(!enqueue(`test:${randomUUID()}`,`✅ ${settings.brand_name} 通知测试成功`)) fail(400,'请先配置 Telegram Token 和 Chat ID');return send(res,200,{ok:true,message:'已加入发送队列，请稍后查看状态'});}
         fail(404,'接口不存在');
       }
@@ -412,6 +413,6 @@ export async function createApp(options = {}) {
 function formatBytes(bytes) {const units=['B','KiB','MiB','GiB','TiB'];let i=0;while(bytes>=1024&&i<4){bytes/=1024;i++;}return bytes.toFixed(1)+' '+units[i];}
 if(process.argv[1] && import.meta.url===pathToFileURL(resolve(process.argv[1])).href) {
   const app=await createApp();
-  app.server.listen(Number(process.env.PORT ?? 8080),process.env.HOST ?? '127.0.0.1',()=>console.log(`Firefly Probe 0.2.4 listening on ${process.env.HOST ?? '127.0.0.1'}:${process.env.PORT ?? 8080}`));
+  app.server.listen(Number(process.env.PORT ?? 8080),process.env.HOST ?? '127.0.0.1',()=>console.log(`Firefly Probe 0.2.5 listening on ${process.env.HOST ?? '127.0.0.1'}:${process.env.PORT ?? 8080}`));
   let stopping=false;for(const sig of ['SIGINT','SIGTERM']) process.on(sig,async()=>{if(stopping)return;stopping=true;await app.close();process.exit(0);});
 }
