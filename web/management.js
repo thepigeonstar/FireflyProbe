@@ -11,7 +11,7 @@ const managementPage=page;
 page=function(name){
   $('#servers-page').hidden=name!=='servers';
   if(name==='servers'){
-    state.page=name;for(const p of ['overview','settings','guide','costs'])$('#'+p+'-page').hidden=true;
+    state.page=name;for(const p of ['overview','settings','guide','costs','notifications'])$('#'+p+'-page').hidden=true;
     document.querySelectorAll('[data-page]').forEach(x=>x.classList.toggle('active',x.dataset.page===name));$('#page-label').textContent='服务器列表';window.scrollTo(0,0);managementServers();
   }else managementPage(name);
 };
@@ -25,6 +25,7 @@ renderSummary=function(){
   cards[0].querySelector('.metric').setAttribute('role','button');cards[0].querySelector('.metric').tabIndex=0;
   const online=()=>managementOpenStatus('online');cards[0].querySelector('.metric').addEventListener('click',online);cards[0].querySelector('.metric').addEventListener('keydown',e=>{if(['Enter',' '].includes(e.key)){e.preventDefault();online();}});
   for(const [index,key] of [[2,'today'],[3,'month']])cards[index].querySelector('.caption').textContent=trafficDirections(enabled.reduce((s,n)=>({rx:s.rx+n.traffic[key].rx,tx:s.tx+n.traffic[key].tx}),{rx:0,tx:0}));
+  const network=cards[1].querySelector('.metric');network.setAttribute('role','button');network.tabIndex=0;network.addEventListener('click',managementNetworkDetail);network.addEventListener('keydown',e=>{if(['Enter',' '].includes(e.key)){e.preventDefault();managementNetworkDetail();}});
   const cost=$('#summary .cost-card');if(cost){cost.setAttribute('role','button');cost.tabIndex=0;cost.setAttribute('aria-label','查看月均固定支出对应服务器');cost.addEventListener('click',()=>page('costs'));cost.addEventListener('keydown',e=>{if(['Enter',' '].includes(e.key)){e.preventDefault();page('costs');}});}
   $('#summary').querySelectorAll('[data-summary-status]').forEach(x=>x.addEventListener('click',()=>managementOpenStatus(x.dataset.summaryStatus)));
 };
@@ -62,3 +63,16 @@ async function managementSSH(id,deploy){
 }
 const managementToken=showToken;
 showToken=function(result){managementToken(result);$('#token-ssh-deploy')?.remove();const n=state.nodes.find(x=>x.id===result.id);if(n?.ssh_configured&&n.ssh_host){const button=document.createElement('button');button.type='button';button.id='token-ssh-deploy';button.className='primary';button.textContent='通过 SSH 一键部署';button.addEventListener('click',()=>{$('#token-dialog').close();managementSSH(n.id,true);});$('#copy-install').insertAdjacentElement('afterend',button);}};
+
+const notificationLabels={quota:'流量预警',report:'流量日报',offline:'离线 / 恢复',resource:'资源告警',expiry:'到期提醒'};
+function notificationReadTargets(){const targets={};for(const type of Object.keys(notificationLabels)){targets[type]=$('#notify-mode-'+type).value==='all'?null:[...$('#notification-targets').querySelectorAll(`[data-notify-type="${type}"]:checked`)].map(x=>x.dataset.notifyNode);}return targets;}
+function notificationRenderTargets(targets=state.settings.notification_targets||{}){
+  const types=Object.keys(notificationLabels);
+  $('#notification-targets').innerHTML=`<table class="notification-target-table"><thead><tr><th>服务器</th>${types.map(type=>`<th>${notificationLabels[type]}<select id="notify-mode-${type}" aria-label="${notificationLabels[type]}服务器范围"><option value="all" ${targets[type]==null?'selected':''}>全部服务器（含新增）</option><option value="custom" ${targets[type]!=null?'selected':''}>自定义选择</option></select><div class="target-actions"><button type="button" class="link-button" data-target-all="${type}" data-check="true">全选</button><button type="button" class="link-button" data-target-all="${type}" data-check="false">全不选</button></div></th>`).join('')}</tr></thead><tbody>${state.nodes.map(n=>`<tr><td><strong>${escapeHTML(n.name)}</strong><small class="table-note">${escapeHTML(n.group_name||'未分组')}${n.enabled?'':' · 已停用'}</small></td>${types.map(type=>`<td><input type="checkbox" data-notify-type="${type}" data-notify-node="${n.id}" aria-label="${escapeHTML(n.name)} · ${notificationLabels[type]}" ${targets[type]==null||targets[type].includes(n.id)?'checked':''} ${targets[type]==null?'disabled':''}></td>`).join('')}</tr>`).join('')||'<tr><td colspan="6">暂无服务器，请先到服务器列表添加。</td></tr>'}</tbody></table>`;
+  for(const type of types)$('#notify-mode-'+type).addEventListener('change',()=>{const data=notificationReadTargets();notificationRenderTargets(data);});
+  $('#notification-targets').querySelectorAll('[data-target-all]').forEach(button=>button.addEventListener('click',()=>{const data=notificationReadTargets();data[button.dataset.targetAll]=button.dataset.check==='true'?state.nodes.map(n=>n.id):[];notificationRenderTargets(data);}));
+}
+const notificationFill=fillSettings;
+fillSettings=function(){notificationFill();notificationRenderTargets();};
+
+async function managementNetworkDetail(){state.historyId='network';$('#history-title').textContent='当前总网速 · 最近 24 小时';$('#history-content').textContent='正在加载…';$('#history-dialog').showModal();try{const data=await api('/api/network/history');if(state.historyId!=='network'||!$('#history-dialog').open)return;$('#history-content').innerHTML='<p>所有启用服务器的上传与下载网速汇总，每分钟平均值。</p>'+extraChart({...data,bucket:60},'net');}catch(e){$('#history-content').textContent=e.message;}}

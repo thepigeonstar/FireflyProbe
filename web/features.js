@@ -5,13 +5,6 @@ const extraCurrencies=['CNY','USD','EUR','GBP','JPY','HKD','KRW','SGD','AUD','CA
 const extraMoney=n=>n===null||n===undefined?'待汇率':'¥'+Number(n).toLocaleString('zh-CN',{minimumFractionDigits:2,maximumFractionDigits:2});
 const extraApi=api;
 api=async function(path,options={}){
-  if(options.body&&path==='/api/settings'&&options.method==='PUT'){
-    const data=JSON.parse(options.body),form=$('#settings-form');
-    for(const k of extraNumbers)data[k]=Number(form.elements[k].value);
-    for(const k of extraSwitches)data[k]=form.elements[k].checked;
-    data.expiry_days=form.elements.expiry_days.value.split(',').map(x=>x.trim()).filter(Boolean).map(Number);
-    options={...options,body:JSON.stringify(data)};
-  }
   if(options.body&&/^\/api\/nodes(?:\/[a-f0-9-]{36})?$/.test(path)&&['POST','PUT'].includes(options.method)){
     const data=JSON.parse(options.body),form=$('#node-form');
     for(const k of ['cost_amount','cost_months'])data[k]=Number(data[k]);
@@ -25,9 +18,9 @@ api=async function(path,options={}){
   return result;
 };
 const extraFill=fillSettings;
-fillSettings=function(){extraFill();const form=$('#settings-form');for(const k of [...extraNumbers,'quiet_start','quiet_end'])form.elements[k].value=state.settings[k]??'';for(const k of extraSwitches)form.elements[k].checked=Boolean(state.settings[k]);form.elements.expiry_days.value=(state.settings.expiry_days||[]).join(',');};
+fillSettings=function(){extraFill();const form={elements:new Proxy({}, {get:(unused,k)=>$('#settings-form').elements[k]||$('#notification-form').elements[k]})};for(const k of [...extraNumbers,'quiet_start','quiet_end'])form.elements[k].value=state.settings[k]??'';for(const k of extraSwitches)form.elements[k].checked=Boolean(state.settings[k]);form.elements.expiry_days.value=(state.settings.expiry_days||[]).join(',');};
 const extraPage=page;
-page=function(name){$('#costs-page').hidden=name!=='costs';if(name==='costs'){state.page=name;for(const p of ['overview','settings','guide'])$('#'+p+'-page').hidden=true;document.querySelectorAll('[data-page]').forEach(x=>x.classList.toggle('active',x.dataset.page===name));$('#page-label').textContent='费用统计';window.scrollTo(0,0);extraLoadCosts();}else{extraPage(name);if(name==='settings')extraBackups();}};
+page=function(name){$('#costs-page').hidden=name!=='costs';if(name==='costs'){state.page=name;for(const p of ['overview','settings','guide','notifications'])$('#'+p+'-page').hidden=true;document.querySelectorAll('[data-page]').forEach(x=>x.classList.toggle('active',x.dataset.page===name));$('#page-label').textContent='费用统计';window.scrollTo(0,0);extraLoadCosts();}else{extraPage(name);if(name==='settings')extraBackups();}};
 const extraSummary=renderSummary;
 renderSummary=function(){extraSummary();const cost=state.cost_summary;if(cost)$('#summary').insertAdjacentHTML('beforeend',`<article class="summary-card cost-card"><div class="label">月均固定支出<span class="summary-icon">¥</span></div><div class="metric">${extraMoney(cost.monthly_rmb)}<small>/月</small></div><div class="caption">${cost.missing?`${cost.missing} 台等待汇率 · 已知 ${extraMoney(cost.known_monthly_rmb)}`:`${cost.count} 台计费服务器 · 按付款周期摊分`}</div></article>`);if(state.page==='costs')extraRenderCosts();};
 function extraError(value){return String(value||'').replace('waiting for first daily traffic sample in configured timezone','等待统计时区内的首次日流量样本').replace('vnStat read failed; check vnstat service and interface database','vnStat 读取失败，请检查服务和统计网卡').replace('vnStat database has no selected interface','vnStat 数据库中没有所选网卡').replace('CPU stats unavailable','无法读取 CPU 指标').replace('memory stats unavailable','无法读取内存指标').replace('disk stats unavailable','无法读取磁盘指标');}

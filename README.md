@@ -1,8 +1,8 @@
-# 萤火 · Firefly Probe v0.2.1
+# 萤火 · Firefly Probe v0.2.2
 
 给约 10–50 台 Linux VPS 使用的服务器监控工具。独立运行，不需要 Xboard 或 Komari。
 
-安装和更新使用下面的固定命令。升级步骤及本次功能见 `UPDATE-v0.2.1.md`。
+安装和更新使用下面的固定命令。升级步骤及本次功能见 `UPDATE-v0.2.2.md`。
 
 ## 固定命令：安装和更新
 
@@ -26,11 +26,15 @@ bash -o pipefail -c 'curl --proto "=https" --tlsv1.2 -fsS https://raw.githubuser
 
 ## 名称与图标
 
-后台“通知与设置”可以修改显示名称、英文名称、Logo 和浏览器图标。默认萤火 / Firefly Probe。选择 PNG、JPEG 或 WebP 图片后点击保存，图片自动缩小后保存在主控数据库；不修改安装目录和节点密钥。未设置独立浏览器图标时使用 Logo。Telegram 新通知使用保存的显示名称。
+后台“设置”可以修改显示名称、英文名称、Logo 和浏览器图标。默认萤火 / Firefly Probe。选择 PNG、JPEG 或 WebP 图片后点击保存，图片自动缩小后保存在主控数据库；不修改安装目录和节点密钥。未设置独立浏览器图标时使用 Logo。Telegram 新通知使用保存的显示名称。
 
 ## 一键安装和更新
 
 v0.2.0 支持从 GitHub 安装主控，以及在后台复制命令接入服务器。发布仓库和命令见 [GITHUB发布指南.md](GITHUB发布指南.md)。已有主控升级见 [UPDATE-v0.2.0.md](UPDATE-v0.2.0.md)。
+
+## v0.2.2 新增
+
+通知与设置分开、设置移至导航底部。五类通知独立选择服务器范围，两个页面独立保存。公开页入口在设置，路径 /public；移除管理员入口，新增服务器与总网速的 24 小时二级历史页面。详见 [UPDATE-v0.2.2.md](UPDATE-v0.2.2.md)。
 
 ## v0.2.1 新增
 

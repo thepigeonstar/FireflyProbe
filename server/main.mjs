@@ -11,6 +11,7 @@ import { createRates, nodeCost, costSummary } from './costs.mjs';
 import { alarmDefaults, inQuiet, processAlarms } from './alarms.mjs';
 import { createBackups, backupName, receiveRestore } from './backups.mjs';
 import { createVault, createSSH, sshFields } from './ssh.mjs';
+import {notificationSelected,validateTargets} from './notification-targets.mjs';
 
 const derive = promisify(scrypt);
 const sha = s => createHash('sha256').update(s).digest('hex');
@@ -62,6 +63,7 @@ function settingsFields(input, old) {
   for(const k of ['quiet_enabled','backup_enabled','public_enabled','public_show_metrics','public_show_traffic'])if(input[k]!==undefined){if(typeof input[k]!=='boolean')fail(400,'开关配置无效');s[k]=input[k];}
   for(const k of ['quiet_start','quiet_end'])if(input[k]!==undefined){if(typeof input[k]!=='string'||!/^([01]\d|2[0-3]):[0-5]\d$/.test(input[k]))fail(400,'静默时间格式无效');s[k]=input[k];}
   if(input.expiry_days!==undefined){if(!Array.isArray(input.expiry_days)||input.expiry_days.length>8)fail(400,'最多八个到期提醒时间');s.expiry_days=[...new Set(input.expiry_days.map(x=>finite(x,0,90,'提前提醒天数',true)))].sort((a,b)=>b-a);}
+  if(input.notification_targets!==undefined){try{s.notification_targets=validateTargets(input.notification_targets);}catch(e){fail(400,e.message);}}
   return s;
 }
 
@@ -120,6 +122,20 @@ export async function createApp(options = {}) {
       return { ...safe, last_version:live?.metrics?.version??n.last_version, last_seen: seen, status, metrics: status === 'online' ? live?.metrics ?? null : null, traffic: dailyTotals(db,n,today), cost:nodeCost(n,rates), expired: Boolean(n.expires && n.expires < today),maintenance:n.maintenance_until>now() };
     });
   };
+  const publicHistoryCache=new Map();
+  function publicHistory(id='network',admin=false){
+    if(!admin&&(!settings.public_enabled||!settings.public_show_metrics))fail(404,'公开网速记录尚未启用');
+    const node=id==='network'?null:db.prepare('SELECT id,name,public_visible FROM nodes WHERE id=?').get(id);
+    if(id!=='network'&&(!node||(!admin&&!node.public_visible)))fail(404,'公开服务器不存在');
+    const visibleNodes=getNodes().filter(n=>(admin||n.public_visible)&&(node?n.id===id:n.enabled)),signature=JSON.stringify(visibleNodes.map(n=>[n.id,n.name,n.enabled]));
+    const cacheKey=(admin?'admin:':'')+id,stamp=now(),cached=publicHistoryCache.get(cacheKey);if(cached&&stamp-cached.stamp<15&&cached.signature===signature)return cached.data;
+    const start=stamp-86400,filter=node?'n.id=?'+(admin?'':' AND n.public_visible=1'):(admin?'n.enabled=1':'n.public_visible=1 AND n.enabled=1'),params=node?[start,stamp,id]:[start,stamp];
+    const rows=db.prepare('SELECT m.minute,SUM(m.rx/m.count) rx,SUM(m.tx/m.count) tx FROM minutes m JOIN nodes n ON n.id=m.node_id WHERE m.minute>=? AND m.minute<=? AND '+filter+' GROUP BY m.minute ORDER BY m.minute').all(...params);
+    const byMinute=new Map(rows.map(row=>[row.minute,{...row}]));
+    const visible=new Set(visibleNodes.map(n=>n.id));
+    for(const [nodeId,live] of latest){if(!visible.has(nodeId)||live.minute<start||live.minute>stamp)continue;const stored=db.prepare('SELECT rx/count rx,tx/count tx FROM minutes WHERE node_id=? AND minute=?').get(nodeId,live.minute),a=live.aggregate,row=byMinute.get(live.minute)||{minute:live.minute,rx:0,tx:0};row.rx+=a.rx/a.count-(stored?.rx||0);row.tx+=a.tx/a.count-(stored?.tx||0);byMinute.set(live.minute,row);}
+    const data={brand:brandView(settings),id:node?.id??'network',name:node?.name??'当前总网速',hours:24,start,server_time:stamp,minutes:[...byMinute.values()].sort((a,b)=>a.minute-b.minute).map(r=>({minute:r.minute,rx:Math.max(0,r.rx),tx:Math.max(0,r.tx)}))};publicHistoryCache.set(cacheKey,{stamp,data,signature});if(publicHistoryCache.size>201)publicHistoryCache.delete(publicHistoryCache.keys().next().value);return data;
+  }
   async function telegram(message) {
     const result = await fetch(`https://api.telegram.org/bot${settings.telegram_token}/sendMessage`, {
       method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({ chat_id:settings.telegram_chat, text:message }), signal:AbortSignal.timeout(10000)
@@ -136,22 +152,23 @@ export async function createApp(options = {}) {
         if(!n.enabled)continue;
         processAlarms(db,n,settings,stamp,today,enqueue);
         if (!n.last_seen||!n.alerts_enabled||n.maintenance_until>stamp||inQuiet(settings)) continue;
+        if(!notificationSelected(settings,'offline',n.id))noticeState.delete(n.id);
         const previous = noticeState.get(n.id);
         const historyFresh = n.history_seen && stamp-n.history_seen < 900 && !n.history_error && n.history_timezone === settings.timezone;
         if (n.status === 'offline') {
-          if (enqueue(`offline:${n.id}:${n.last_seen}`, `🔴 ${settings.brand_name} · ${n.name} 离线\n最后上报：${new Date(n.last_seen*1000).toISOString()}`)) noticeState.set(n.id,'offline');
+          if (notificationSelected(settings,'offline',n.id) && enqueue(`offline:${n.id}:${n.last_seen}`, `🔴 ${settings.brand_name} · ${n.name} 离线\n最后上报：${new Date(n.last_seen*1000).toISOString()}`)) noticeState.set(n.id,'offline');
         } else {
-          if (previous === 'offline' && enqueue(`recovery:${n.id}:${n.last_seen}`, `🟢 ${settings.brand_name} · ${n.name} 恢复在线`)) noticeState.set(n.id,'online');
-          if (historyFresh && n.traffic.ratio !== null) for (const threshold of settings.thresholds) if (n.traffic.ratio >= threshold) enqueue(`quota:${n.id}:${n.traffic.bounds.start}:${n.quota}:${n.billing_mode}:${threshold}`, `⚠️ ${settings.brand_name} · ${n.name} 流量达到 ${threshold}%\n已用 ${formatBytes(n.traffic.measured)} / ${formatBytes(n.quota)}\n周期 ${n.traffic.bounds.start} 至 ${n.traffic.bounds.end}（结束日不含）`);
+          if (previous === 'offline' && notificationSelected(settings,'offline',n.id) && enqueue(`recovery:${n.id}:${n.last_seen}`, `🟢 ${settings.brand_name} · ${n.name} 恢复在线`)) noticeState.set(n.id,'online');
+          if (notificationSelected(settings,'quota',n.id) && historyFresh && n.traffic.ratio !== null) for (const threshold of settings.thresholds) if (n.traffic.ratio >= threshold) enqueue(`quota:${n.id}:${n.traffic.bounds.start}:${n.quota}:${n.billing_mode}:${threshold}`, `⚠️ ${settings.brand_name} · ${n.name} 流量达到 ${threshold}%\n已用 ${formatBytes(n.traffic.measured)} / ${formatBytes(n.quota)}\n周期 ${n.traffic.bounds.start} 至 ${n.traffic.bounds.end}（结束日不含）`);
         }
       }
       const clock = Object.fromEntries(new Intl.DateTimeFormat('en-GB',{timeZone:settings.timezone,hour:'2-digit',minute:'2-digit',hourCycle:'h23'}).formatToParts(new Date()).map(x=>[x.type,x.value]));
       if (settings.report_enabled && Number(clock.hour)*60+Number(clock.minute) >= settings.report_hour*60+settings.report_minute) {
         const yesterday = new Date(Date.parse(today)-86400000).toISOString().slice(0,10);
-        const lines = nodes.filter(n=>n.enabled).map(n=>`${n.status==='online'?'🟢':'🔴'} ${n.name}\n昨日 ${formatBytes(n.traffic.yesterday.rx+n.traffic.yesterday.tx)} · 周期 ${formatBytes(n.traffic.measured)}${n.quota ? ' / '+formatBytes(n.quota):''}${n.history_error || !n.history_seen || stamp-n.history_seen>900 ? '\n⚠️ 流量数据未同步或异常':''}`);
+        const lines = nodes.filter(n=>n.enabled&&notificationSelected(settings,'report',n.id)).map(n=>`${n.status==='online'?'🟢':'🔴'} ${n.name}\n昨日 ${formatBytes(n.traffic.yesterday.rx+n.traffic.yesterday.tx)} · 周期 ${formatBytes(n.traffic.measured)}${n.quota ? ' / '+formatBytes(n.quota):''}${n.history_error || !n.history_seen || stamp-n.history_seen>900 ? '\n⚠️ 流量数据未同步或异常':''}`);
         let message = `📊 ${settings.brand_name} 日报 · ${yesterday}\n统计时区：${settings.timezone}`, part = 0;
         for (const line of lines) { if (message.length+line.length>3000) { enqueue(`daily:${today}:${part++}`,message); message='📊 日报（续）'; } message+='\n\n'+line; }
-        enqueue(`daily:${today}:${part}`,message);
+        if(lines.length)enqueue(`daily:${today}:${part}`,message);
       }
       if (settings.telegram_token && settings.telegram_chat && !options.disableTelegram) {
         const job = db.prepare("SELECT * FROM outbox WHERE status='pending' AND next_try<=? ORDER BY id LIMIT 1").get(stamp);
@@ -262,7 +279,7 @@ export async function createApp(options = {}) {
       }finally{db.exec('DETACH DATABASE restored');}
       settings={...initial,...JSON.parse(db.prepare("SELECT value FROM settings WHERE key='config'").get()?.value??'{}')};
       notificationGraceUntil=now()+settings.offline_seconds;
-      restoreEpoch++;ssh.reset();
+      restoreEpoch++;ssh.reset();publicHistoryCache.clear();
       publicCache=null;
       sessions.clear();latest.clear();noticeState.clear();
     }finally{if(ownsLock)restoring=false;const cleanup=attempt=>{try{for(const suffix of ['','-wal','-shm'])rmSync(incoming+suffix,{force:true});}catch(e){if(attempt<12&&['EPERM','EBUSY','EACCES'].includes(e.code))setTimeout(()=>cleanup(attempt+1),5000).unref();else console.error('Restore cleanup:',e.name);}};cleanup(0);}
@@ -275,9 +292,11 @@ export async function createApp(options = {}) {
       if(restoring)fail(503,'正在恢复备份，请稍后重试');
       if(method==='GET'&&path==='/healthz') return send(res,200,{ok:true});
       if(method==='GET'&&path==='/api/brand') return send(res,200,brandView(settings));
+      if(method==='GET'&&path==='/api/public/history')return send(res,200,publicHistory());
+      const publicNodeHistory=/^\/api\/public\/nodes\/([a-f0-9-]{36})\/history$/.exec(path);if(method==='GET'&&publicNodeHistory)return send(res,200,publicHistory(publicNodeHistory[1]));
       if(method==='GET'&&path==='/api/public') {
         if(!settings.public_enabled)fail(404,'公开展示尚未启用');
-        if(!publicCache||now()-publicCache.created>=5){const nodes=snapshot().filter(n=>n.public_visible).map(n=>({id:n.id,name:n.name,group_name:n.group_name,status:n.status,last_seen:n.last_seen,metrics:settings.public_show_metrics&&n.metrics?{rx_speed:n.metrics.rx_speed,tx_speed:n.metrics.tx_speed,cpu:n.metrics.cpu,mem_percent:n.metrics.mem_total?n.metrics.mem_used/n.metrics.mem_total*100:0,disk_percent:n.metrics.disk_total?n.metrics.disk_used/n.metrics.disk_total*100:0}:undefined,traffic:settings.public_show_traffic?{today:n.traffic.today.rx+n.traffic.today.tx,month:n.traffic.month.rx+n.traffic.month.tx}:undefined}));publicCache={created:now(),payload:{brand:brandView(settings),nodes,server_time:now()}};}
+        if(!publicCache||now()-publicCache.created>=5){const nodes=snapshot().filter(n=>n.public_visible).map(n=>({id:n.id,name:n.name,group_name:n.group_name,status:n.status,last_seen:n.last_seen,metrics:settings.public_show_metrics&&n.metrics?{rx_speed:n.metrics.rx_speed,tx_speed:n.metrics.tx_speed,cpu:n.metrics.cpu,mem_percent:n.metrics.mem_total?n.metrics.mem_used/n.metrics.mem_total*100:0,disk_percent:n.metrics.disk_total?n.metrics.disk_used/n.metrics.disk_total*100:0}:undefined,traffic:settings.public_show_traffic?{today:n.traffic.today.rx+n.traffic.today.tx,month:n.traffic.month.rx+n.traffic.month.tx}:undefined}));publicCache={created:now(),payload:{brand:brandView(settings),nodes,network:settings.public_show_metrics?nodes.filter(n=>n.status!=='disabled').reduce((total,n)=>({rx:total.rx+(n.metrics?.rx_speed||0),tx:total.tx+(n.metrics?.tx_speed||0)}),{rx:0,tx:0}):undefined,show_network:settings.public_show_metrics,server_time:now()}};}
         return send(res,200,publicCache.payload);
       }
       // Only these public program files are downloadable; configuration and tokens are never served here.
@@ -316,7 +335,8 @@ export async function createApp(options = {}) {
         const sshRoute=/^\/api\/nodes\/([a-f0-9-]{36})\/ssh\/(probe|trust|test|deploy)$/.exec(path);
         if(sshRoute&&method==='POST'){const [unused,id,action]=sshRoute;if(action==='probe')return send(res,200,await ssh.probe(id));if(action==='trust'){const input=await body(req);ssh.trust(id,input.fingerprint);return send(res,200,{ok:true});}if(action==='test')return send(res,200,await ssh.test(id));return send(res,202,ssh.deploy(id));}
         const jobRoute=/^\/api\/ssh\/jobs\/([a-f0-9-]{36})$/.exec(path);if(jobRoute&&method==='GET')return send(res,200,ssh.status(jobRoute[1]));
-        if(path==='/api/nodes'&&method==='GET') {const rates=fx.read();const {rates:unused,...fxInfo}=rates;return send(res,200,{nodes:snapshot(),settings:safeSettings(),cost_summary:costSummary(getNodes(),rates),fx_info:fxInfo,server_time:now(),version:'0.2.1',agent_version:'0.2.0'});}
+        if(path==='/api/nodes'&&method==='GET') {const rates=fx.read();const {rates:unused,...fxInfo}=rates;return send(res,200,{nodes:snapshot(),settings:safeSettings(),cost_summary:costSummary(getNodes(),rates),fx_info:fxInfo,server_time:now(),version:'0.2.2',agent_version:'0.2.0'});}
+        if(path==='/api/network/history'&&method==='GET')return send(res,200,publicHistory('network',true));
         if(path==='/api/costs'&&method==='GET')return send(res,200,{...costSummary(getNodes(),fx.read()),fx:fx.read()});
         if(path==='/api/fx/refresh'&&method==='POST')return send(res,200,await fx.refresh(true));
         if(path==='/api/backups'&&method==='GET')return send(res,200,backups.list());
@@ -349,13 +369,13 @@ export async function createApp(options = {}) {
           if(!match[2]&&method==='DELETE') {if(ssh.busy(node.id))fail(409,'部署中不能删除服务器');db.prepare('DELETE FROM nodes WHERE id=?').run(node.id);latest.delete(node.id);noticeState.delete(node.id);publicCache=null;return send(res,200,{ok:true});}
         }
         if(path==='/api/settings'&&method==='GET') return send(res,200,editableSettings());
-        if(path==='/api/settings'&&method==='PUT') {const updated=settingsFields(await body(req),settings);db.prepare("INSERT INTO settings VALUES('config',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value").run(JSON.stringify(updated));settings=updated;publicCache=null;return send(res,200,editableSettings());}
+        if(path==='/api/settings'&&method==='PUT') {const input=await body(req),updated=settingsFields(input,settings);if(input.notification_targets!==undefined){const reportChanged=JSON.stringify(settings.notification_targets?.report??null)!==JSON.stringify(updated.notification_targets.report);for(const job of db.prepare("SELECT id,event_key FROM outbox WHERE status='pending'").all()){const [kind,id]=job.event_key.split(':'),type=({quota:'quota',offline:'offline',recovery:'offline',resource:'resource','resource-recovery':'resource',expiry:'expiry',expired:'expiry'})[kind];if((kind==='daily'&&reportChanged)||(type&&!notificationSelected(updated,type,id)))db.prepare("UPDATE outbox SET event_key=event_key||?,status='failed',error='通知服务器范围调整，已取消待发送通知' WHERE id=?").run(':scope-'+randomUUID(),job.id);}}db.prepare("INSERT INTO settings VALUES('config',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value").run(JSON.stringify(updated));settings=updated;publicCache=null;return send(res,200,editableSettings());}
         if(path==='/api/notifications'&&method==='GET') return send(res,200,db.prepare('SELECT id,status,attempts,created,sent,error FROM outbox ORDER BY id DESC LIMIT 30').all());
         if(path==='/api/notifications/test'&&method==='POST') {if(!enqueue(`test:${randomUUID()}`,`✅ ${settings.brand_name} 通知测试成功`)) fail(400,'请先配置 Telegram Token 和 Chat ID');return send(res,200,{ok:true,message:'已加入发送队列，请稍后查看状态'});}
         fail(404,'接口不存在');
       }
       if(method==='GET') {
-        const file=path==='/'?'index.html':path==='/public'?'public.html':path.slice(1);
+        const file=path==='/'?'index.html':(path==='/public'||path==='/public/network'||/^\/public\/servers\/[a-f0-9-]{36}$/.test(path))?'public.html':path.slice(1);
         if(publicFiles.has(file)) {res.setHeader('Content-Type',file.endsWith('.svg')?'image/svg+xml':file.endsWith('.js')?'text/javascript; charset=utf-8':file.endsWith('.css')?'text/css; charset=utf-8':'text/html; charset=utf-8');return res.end(publicFiles.get(file));}
       }
       fail(404,'页面不存在');
