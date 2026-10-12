@@ -1,0 +1,24 @@
+services:
+  lightprobe:
+    build: .
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      HOST: 0.0.0.0
+      DATA_DIR: /app/data
+    ports:
+      - "127.0.0.1:8080:8080"
+    volumes:
+      - lightprobe-data:/app/data
+    mem_limit: 384m
+    cpus: 0.75
+    pids_limit: 64
+    security_opt:
+      - no-new-privileges:true
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+volumes:
+  lightprobe-data:
