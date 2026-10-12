@@ -76,6 +76,11 @@ fi
 if grep -q "from './notification-targets.mjs'" "$temporary/source/server/main.mjs"; then
   [[ -f "$temporary/source/server/notification-targets.mjs" ]] || { echo '仓库缺少 server/notification-targets.mjs，请上传完整项目。' >&2; exit 1; }
 fi
+if grep -q "from './network-chart.mjs'" "$temporary/source/server/main.mjs"; then
+  for required in server/network-chart.mjs web/background.js web/background.css; do
+    [[ -f "$temporary/source/$required" ]] || { echo "仓库缺少 $required，请上传完整项目。" >&2; exit 1; }
+  done
+fi
 if [[ "$update" == true ]]; then
   expected_project=$(basename "$target")
   container=$(cd "$target" && docker compose ps -aq lightprobe)
@@ -86,7 +91,7 @@ if [[ "$update" == true ]]; then
 fi
 mkdir -p -- "$target"
 # Copy a fixed list. Never copy .env, data, credentials, or change the Compose project name.
-for item in agent bin server web tools tests package.json package-lock.json Dockerfile compose.yaml compose.https.yaml Caddyfile setup.sh update.sh install-master.sh README.md verification.md 功能与费用说明.md UPDATE-v0.2.0.md UPDATE-v0.2.1.md UPDATE-v0.2.2.md GITHUB发布指南.md 开始部署.md .dockerignore; do
+for item in agent bin server web tools tests package.json package-lock.json Dockerfile compose.yaml compose.https.yaml Caddyfile setup.sh update.sh install-master.sh README.md verification.md 功能与费用说明.md UPDATE-v0.2.0.md UPDATE-v0.2.1.md UPDATE-v0.2.2.md UPDATE-v0.2.3.md GITHUB发布指南.md 开始部署.md .dockerignore; do
   [[ -e "$temporary/source/$item" ]] && cp -a -- "$temporary/source/$item" "$target/"
 done
 cd -- "$target"

@@ -12,13 +12,14 @@ import { alarmDefaults, inQuiet, processAlarms } from './alarms.mjs';
 import { createBackups, backupName, receiveRestore } from './backups.mjs';
 import { createVault, createSSH, sshFields } from './ssh.mjs';
 import {notificationSelected,validateTargets} from './notification-targets.mjs';
+import {networkChart} from './network-chart.mjs';
 
 const derive = promisify(scrypt);
 const sha = s => createHash('sha256').update(s).digest('hex');
 const token = () => randomBytes(32).toString('hex');
 const defaults = { timezone: 'Asia/Shanghai', interval: 5, offline_seconds: 45, keep_days: 180, trend_days: 7, report_enabled: false, report_hour: 8, report_minute: 0, thresholds: [80, 90, 95], telegram_token: '', telegram_chat: '' };
 const staticDir = fileURLToPath(new URL('../web/', import.meta.url));
-const publicFiles = new Map(['index.html', 'app.js', 'features.js','style.css','features.css','management.js','management.css', 'firefly.svg','public.html','public.js'].map(f => [f, readFileSync(join(staticDir, f))]));
+const publicFiles = new Map(['index.html', 'app.js', 'features.js','style.css','features.css','management.js','management.css','background.js','background.css', 'firefly.svg','public.html','public.js'].map(f => [f, readFileSync(join(staticDir, f))]));
 const downloads = new Map([
   ['/install-agent.sh', fileURLToPath(new URL('../agent/bootstrap.sh', import.meta.url))],
   ['/downloads/install.sh', fileURLToPath(new URL('../agent/install.sh', import.meta.url))],
@@ -134,8 +135,9 @@ export async function createApp(options = {}) {
     const byMinute=new Map(rows.map(row=>[row.minute,{...row}]));
     const visible=new Set(visibleNodes.map(n=>n.id));
     for(const [nodeId,live] of latest){if(!visible.has(nodeId)||live.minute<start||live.minute>stamp)continue;const stored=db.prepare('SELECT rx/count rx,tx/count tx FROM minutes WHERE node_id=? AND minute=?').get(nodeId,live.minute),a=live.aggregate,row=byMinute.get(live.minute)||{minute:live.minute,rx:0,tx:0};row.rx+=a.rx/a.count-(stored?.rx||0);row.tx+=a.tx/a.count-(stored?.tx||0);byMinute.set(live.minute,row);}
-    const data={brand:brandView(settings),id:node?.id??'network',name:node?.name??'当前总网速',hours:24,start,server_time:stamp,minutes:[...byMinute.values()].sort((a,b)=>a.minute-b.minute).map(r=>({minute:r.minute,rx:Math.max(0,r.rx),tx:Math.max(0,r.tx)}))};publicHistoryCache.set(cacheKey,{stamp,data,signature});if(publicHistoryCache.size>201)publicHistoryCache.delete(publicHistoryCache.keys().next().value);return data;
+    const data={brand:brandView(settings),id:node?.id??'network',name:node?.name??'当前总网速',hours:24,start,server_time:stamp,minutes:[...byMinute.values()].sort((a,b)=>a.minute-b.minute).map(r=>({minute:r.minute,rx:Math.max(0,r.rx),tx:Math.max(0,r.tx)}))};data.timezone=settings.timezone;data.chart_svg=networkChart(data);data.peak=Math.max(0,...data.minutes.map(r=>r.rx+r.tx));data.average=data.minutes.length?data.minutes.reduce((sum,r)=>sum+r.rx+r.tx,0)/data.minutes.length:0;publicHistoryCache.set(cacheKey,{stamp,data,signature});if(publicHistoryCache.size>201)publicHistoryCache.delete(publicHistoryCache.keys().next().value);return data;
   }
+  function publicChart(id){const {minutes,...chart}=publicHistory(id);return chart;}
   async function telegram(message) {
     const result = await fetch(`https://api.telegram.org/bot${settings.telegram_token}/sendMessage`, {
       method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({ chat_id:settings.telegram_chat, text:message }), signal:AbortSignal.timeout(10000)
@@ -292,8 +294,8 @@ export async function createApp(options = {}) {
       if(restoring)fail(503,'正在恢复备份，请稍后重试');
       if(method==='GET'&&path==='/healthz') return send(res,200,{ok:true});
       if(method==='GET'&&path==='/api/brand') return send(res,200,brandView(settings));
-      if(method==='GET'&&path==='/api/public/history')return send(res,200,publicHistory());
-      const publicNodeHistory=/^\/api\/public\/nodes\/([a-f0-9-]{36})\/history$/.exec(path);if(method==='GET'&&publicNodeHistory)return send(res,200,publicHistory(publicNodeHistory[1]));
+      if(method==='GET'&&path==='/api/public/history')return send(res,200,publicChart());
+      const publicNodeHistory=/^\/api\/public\/nodes\/([a-f0-9-]{36})\/history$/.exec(path);if(method==='GET'&&publicNodeHistory)return send(res,200,publicChart(publicNodeHistory[1]));
       if(method==='GET'&&path==='/api/public') {
         if(!settings.public_enabled)fail(404,'公开展示尚未启用');
         if(!publicCache||now()-publicCache.created>=5){const nodes=snapshot().filter(n=>n.public_visible).map(n=>({id:n.id,name:n.name,group_name:n.group_name,status:n.status,last_seen:n.last_seen,metrics:settings.public_show_metrics&&n.metrics?{rx_speed:n.metrics.rx_speed,tx_speed:n.metrics.tx_speed,cpu:n.metrics.cpu,mem_percent:n.metrics.mem_total?n.metrics.mem_used/n.metrics.mem_total*100:0,disk_percent:n.metrics.disk_total?n.metrics.disk_used/n.metrics.disk_total*100:0}:undefined,traffic:settings.public_show_traffic?{today:n.traffic.today.rx+n.traffic.today.tx,month:n.traffic.month.rx+n.traffic.month.tx}:undefined}));publicCache={created:now(),payload:{brand:brandView(settings),nodes,network:settings.public_show_metrics?nodes.filter(n=>n.status!=='disabled').reduce((total,n)=>({rx:total.rx+(n.metrics?.rx_speed||0),tx:total.tx+(n.metrics?.tx_speed||0)}),{rx:0,tx:0}):undefined,show_network:settings.public_show_metrics,server_time:now()}};}
@@ -335,7 +337,8 @@ export async function createApp(options = {}) {
         const sshRoute=/^\/api\/nodes\/([a-f0-9-]{36})\/ssh\/(probe|trust|test|deploy)$/.exec(path);
         if(sshRoute&&method==='POST'){const [unused,id,action]=sshRoute;if(action==='probe')return send(res,200,await ssh.probe(id));if(action==='trust'){const input=await body(req);ssh.trust(id,input.fingerprint);return send(res,200,{ok:true});}if(action==='test')return send(res,200,await ssh.test(id));return send(res,202,ssh.deploy(id));}
         const jobRoute=/^\/api\/ssh\/jobs\/([a-f0-9-]{36})$/.exec(path);if(jobRoute&&method==='GET')return send(res,200,ssh.status(jobRoute[1]));
-        if(path==='/api/nodes'&&method==='GET') {const rates=fx.read();const {rates:unused,...fxInfo}=rates;return send(res,200,{nodes:snapshot(),settings:safeSettings(),cost_summary:costSummary(getNodes(),rates),fx_info:fxInfo,server_time:now(),version:'0.2.2',agent_version:'0.2.0'});}
+        if(path==='/api/nodes'&&method==='GET') {const rates=fx.read();const {rates:unused,...fxInfo}=rates;return send(res,200,{nodes:snapshot(),settings:safeSettings(),cost_summary:costSummary(getNodes(),rates),fx_info:fxInfo,server_time:now(),version:'0.2.3',agent_version:'0.2.0'});}
+        const adminNetwork=/^\/api\/nodes\/([a-f0-9-]{36})\/network-history$/.exec(path);if(adminNetwork&&method==='GET')return send(res,200,publicHistory(adminNetwork[1],true));
         if(path==='/api/network/history'&&method==='GET')return send(res,200,publicHistory('network',true));
         if(path==='/api/costs'&&method==='GET')return send(res,200,{...costSummary(getNodes(),fx.read()),fx:fx.read()});
         if(path==='/api/fx/refresh'&&method==='POST')return send(res,200,await fx.refresh(true));

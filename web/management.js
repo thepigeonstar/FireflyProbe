@@ -11,7 +11,7 @@ const managementPage=page;
 page=function(name){
   $('#servers-page').hidden=name!=='servers';
   if(name==='servers'){
-    state.page=name;for(const p of ['overview','settings','guide','costs','notifications'])$('#'+p+'-page').hidden=true;
+    state.page=name;for(const p of ['overview','settings','guide','costs','notifications','notification-scope'])$('#'+p+'-page').hidden=true;
     document.querySelectorAll('[data-page]').forEach(x=>x.classList.toggle('active',x.dataset.page===name));$('#page-label').textContent='服务器列表';window.scrollTo(0,0);managementServers();
   }else managementPage(name);
 };
@@ -33,6 +33,7 @@ function managementOpenStatus(status){$('#server-status').value=status;$('#serve
 const managementNodes=renderNodes;
 renderNodes=function(){
   managementNodes();$('#node-grid').querySelectorAll('.node-card').forEach(card=>{const n=state.nodes.find(x=>x.id===card.querySelector('[data-edit]').dataset.edit);card.querySelectorAll('.traffic-grid>div').forEach((cell,index)=>cell.insertAdjacentHTML('beforeend',`<small class="traffic-directions">${trafficDirections(n.traffic[['today','yesterday','cycle'][index]])}</small>`));});
+  $('#node-grid').querySelectorAll('.node-card').forEach(card=>{const id=card.querySelector('[data-edit]').dataset.edit;card.tabIndex=0;card.setAttribute('role','group');card.setAttribute('aria-label',state.nodes.find(n=>n.id===id).name+' 最近24小时网速');card.addEventListener('click',event=>{if(event.target.closest('button,a,input'))return;managementNetworkDetail(id);});card.addEventListener('keydown',event=>{if(event.target===card&&['Enter',' '].includes(event.key)){event.preventDefault();managementNetworkDetail(id);}});});
   if(state.page==='servers')managementServers();
 };
 // Replace the direct event callbacks captured by the older render function.
@@ -67,6 +68,7 @@ showToken=function(result){managementToken(result);$('#token-ssh-deploy')?.remov
 const notificationLabels={quota:'流量预警',report:'流量日报',offline:'离线 / 恢复',resource:'资源告警',expiry:'到期提醒'};
 function notificationReadTargets(){const targets={};for(const type of Object.keys(notificationLabels)){targets[type]=$('#notify-mode-'+type).value==='all'?null:[...$('#notification-targets').querySelectorAll(`[data-notify-type="${type}"]:checked`)].map(x=>x.dataset.notifyNode);}return targets;}
 function notificationRenderTargets(targets=state.settings.notification_targets||{}){
+  $('#notification-scope-summary').textContent=Object.entries(notificationLabels).map(([type,label])=>label+'：'+(targets[type]==null?'全部服务器':targets[type].length+' 台')).join(' · ');
   const types=Object.keys(notificationLabels);
   $('#notification-targets').innerHTML=`<table class="notification-target-table"><thead><tr><th>服务器</th>${types.map(type=>`<th>${notificationLabels[type]}<select id="notify-mode-${type}" aria-label="${notificationLabels[type]}服务器范围"><option value="all" ${targets[type]==null?'selected':''}>全部服务器（含新增）</option><option value="custom" ${targets[type]!=null?'selected':''}>自定义选择</option></select><div class="target-actions"><button type="button" class="link-button" data-target-all="${type}" data-check="true">全选</button><button type="button" class="link-button" data-target-all="${type}" data-check="false">全不选</button></div></th>`).join('')}</tr></thead><tbody>${state.nodes.map(n=>`<tr><td><strong>${escapeHTML(n.name)}</strong><small class="table-note">${escapeHTML(n.group_name||'未分组')}${n.enabled?'':' · 已停用'}</small></td>${types.map(type=>`<td><input type="checkbox" data-notify-type="${type}" data-notify-node="${n.id}" aria-label="${escapeHTML(n.name)} · ${notificationLabels[type]}" ${targets[type]==null||targets[type].includes(n.id)?'checked':''} ${targets[type]==null?'disabled':''}></td>`).join('')}</tr>`).join('')||'<tr><td colspan="6">暂无服务器，请先到服务器列表添加。</td></tr>'}</tbody></table>`;
   for(const type of types)$('#notify-mode-'+type).addEventListener('change',()=>{const data=notificationReadTargets();notificationRenderTargets(data);});
@@ -75,4 +77,4 @@ function notificationRenderTargets(targets=state.settings.notification_targets||
 const notificationFill=fillSettings;
 fillSettings=function(){notificationFill();notificationRenderTargets();};
 
-async function managementNetworkDetail(){state.historyId='network';$('#history-title').textContent='当前总网速 · 最近 24 小时';$('#history-content').textContent='正在加载…';$('#history-dialog').showModal();try{const data=await api('/api/network/history');if(state.historyId!=='network'||!$('#history-dialog').open)return;$('#history-content').innerHTML='<p>所有启用服务器的上传与下载网速汇总，每分钟平均值。</p>'+extraChart({...data,bucket:60},'net');}catch(e){$('#history-content').textContent=e.message;}}
+async function managementNetworkDetail(id='network'){if(typeof id!=='string')id='network';state.historyId=id;const name=id==='network'?'当前总网速':state.nodes.find(n=>n.id===id)?.name||'服务器';$('#history-title').textContent=name+' · 最近 24 小时';$('#history-content').textContent='正在加载…';$('#history-dialog').showModal();try{const data=await api(id==='network'?'/api/network/history':'/api/nodes/'+id+'/network-history');if(state.historyId!==id||!$('#history-dialog').open)return;$('#history-content').innerHTML=`<p>实时网络记录 · 每分钟平均值，最近 24 小时滚动窗口。</p>${data.chart_svg}<div class="public-history-stats"><span>最高合计网速 <strong>${b(data.peak)}/s</strong></span><span>已有样本平均 <strong>${b(data.average)}/s</strong></span></div><details><summary>查看每分钟记录</summary><div class="table-scroll public-history-table"><table><thead><tr><th>时间</th><th>↑ 上传</th><th>↓ 下载</th><th>合计</th></tr></thead><tbody>${data.minutes.slice().reverse().map(row=>`<tr><td>${escapeHTML(timestamp(row.minute))}</td><td>${b(row.tx)}/s</td><td>${b(row.rx)}/s</td><td>${b(row.rx+row.tx)}/s</td></tr>`).join('')||'<tr><td colspan="4">暂无记录</td></tr>'}</tbody></table></div></details>`;}catch(e){$('#history-content').textContent=e.message;}}
