@@ -1,0 +1,22 @@
+name: Check
+on: [push, pull_request]
+permissions:
+  contents: read
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: agent/go.mod
+      - run: npm test
+      - run: go test ./... && go vet ./...
+        working-directory: agent
+      - run: bash -n setup.sh update.sh install-master.sh agent/install.sh agent/bootstrap.sh
+      - run: shellcheck -S warning setup.sh update.sh install-master.sh agent/install.sh agent/bootstrap.sh
+      - run: sudo bash tests/install-master.test.sh
+      - run: docker build -t lightprobe-check .
