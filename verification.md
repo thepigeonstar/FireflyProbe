@@ -1,3 +1,13 @@
+# 固定安装入口补充验证
+
+日期：2026-10-12。
+
+- 公开仓库已上传根目录文件，但缺少 agent/bin/server/web/tests/tools/.github；尚无远端 CI 记录及正式 Release。
+- 实测 GitHub 在无正式 Release 时把 /releases/latest 重定向到 /releases，返回 HTTP 200；安装器已支持该情况，也支持 404。
+- 修改后的安装、更新脚本及新增 Linux 隔离测试脚本通过 ShellCheck 静态检查。
+- GitHub 工作流加入隔离测试：最新正式标签、main 回退、自动更新并保留 .env、网络失败、源文件缺失时不覆盖旧文件。该 Linux 测试尚未在当前 Windows 环境运行，待目录完整上传后由 CI 验证。
+- 程序本体版本仍为 0.1.3；本次只修改安装器、更新验证、CI 和说明。
+
 # Firefly Probe v0.1.3 验证记录
 
 日期：2026-10-12。Windows 本机验证，未连接或修改 VPS。

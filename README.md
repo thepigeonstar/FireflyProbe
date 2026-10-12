@@ -1,26 +1,28 @@
 # 萤火 · Firefly Probe v0.1.3
 
-Linux VPS 使用的服务器监控工具。
+给约 10–50 台 Linux VPS 使用的服务器监控工具。独立运行，不需要 Xboard 或 Komari。
 
 **这是可安装验证的首版，不是已经在你的服务器部署好的服务。请先接入一台测试服务器。**
 
-## 从 GitHub 一键安装
+## 固定命令：安装和更新
 
 公开仓库：[thepigeonstar/FireflyProbe](https://github.com/thepigeonstar/FireflyProbe)。主控需要 Docker Engine、Compose 插件、curl、tar，以 root 运行：
 
 ```bash
-bash -o pipefail -c 'curl --proto "=https" --tlsv1.2 -fsS https://raw.githubusercontent.com/thepigeonstar/FireflyProbe/v0.1.3/install-master.sh | bash'
+bash -o pipefail -c 'curl --proto "=https" --tlsv1.2 -fsS https://raw.githubusercontent.com/thepigeonstar/FireflyProbe/main/install-master.sh | bash'
 ```
 
-默认目录为 /root/lightprobe。安装时填写域名：80/443 空闲选择自动 HTTPS；已有 Nginx 选择方式 2，再配置 HTTPS 反向代理到本机 8080。脚本不安装 Docker。
+这条命令长期不变：默认安装目录为 /root/lightprobe；没有安装时部署主控，有现有 .env 和 compose.yaml 时自动更新，保留配置和 Docker 数据卷。
 
-已有主控升级：
+脚本优先下载 GitHub 最新正式 Release；仓库还没有正式 Release 时下载 main 分支。网络异常或源文件缺失时停止，不覆盖安装文件。需要固定某个标签时可选用 --ref，但日常无需指定版本。
+
+新安装时填写域名：80/443 空闲选择自动 HTTPS；已有 Nginx 选择方式 2，并配置 HTTPS 反向代理到本机 8080。脚本不安装 Docker。
+
+自定义目录可使用同一入口加参数：
 
 ```bash
-bash -o pipefail -c 'curl --proto "=https" --tlsv1.2 -fsS https://raw.githubusercontent.com/thepigeonstar/FireflyProbe/v0.1.3/install-master.sh | bash -s -- --update --dir /root/lightprobe'
+bash -o pipefail -c 'curl --proto "=https" --tlsv1.2 -fsS https://raw.githubusercontent.com/thepigeonstar/FireflyProbe/main/install-master.sh | bash -s -- --dir /你的原安装目录'
 ```
-
-部署目录、Compose 项目名和数据卷沿用旧版，以便直接升级。
 
 ## 名称与图标
 
