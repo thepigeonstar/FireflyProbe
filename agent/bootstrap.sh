@@ -17,7 +17,10 @@ if [[ "$upgrade" == true ]]; then
   [[ -f /etc/lightprobe-agent.json ]] || { echo '未找到现有采集端配置，请先接入服务器。' >&2; exit 1; }
   mapfile -t existing < <(python3 -c 'import json; c=json.load(open("/etc/lightprobe-agent.json")); print(c["server"]); print(c["token"])')
   [[ ${#existing[@]} -eq 2 ]] || { echo '无法读取采集端配置。' >&2; exit 1; }
-  server=${existing[0]}; secret=${existing[1]}
+  if [[ -n "$server" && "${server%/}" != "${existing[0]%/}" ]]; then
+    echo '该服务器已接入其他主控，请先核对 /etc/lightprobe-agent.json，避免覆盖现有监控。' >&2; exit 1
+  fi
+  server=${server:-${existing[0]}}; secret=${secret:-${existing[1]}}
 fi
 [[ "$server" =~ ^https://[a-zA-Z0-9.-]+(:[0-9]+)?/?$ && "$secret" =~ ^[a-f0-9]{64}$ ]] || { echo '需要有效的 HTTPS 主控地址和节点密钥。' >&2; exit 1; }
 server=${server%/}
@@ -42,6 +45,14 @@ printf '%s  %s\n' "$checksum" "$temporary/lightprobe-agent-linux-$arch" | sha256
 printf 'header = "Authorization: Bearer %s"\n' "$secret" > "$temporary/curl.conf"
 curl --config "$temporary/curl.conf" --proto '=https' --tlsv1.2 --fail --show-error --silent --connect-timeout 15 --max-time 30 "$server/api/agent/config" -o "$temporary/remote.json"
 printf '{"server":"%s","token":"%s","disk_path":"/"}\n' "$server" "$secret" > "$temporary/lightprobe-agent.json"
-if [[ "$upgrade" == true ]]; then cp /etc/lightprobe-agent.json "$temporary/lightprobe-agent.json"; fi
+if [[ "$upgrade" == true ]]; then
+  python3 - "$temporary/lightprobe-agent.json" <<'PY'
+import json, sys
+with open(sys.argv[1]) as f: supplied = json.load(f)
+with open('/etc/lightprobe-agent.json') as f: existing = json.load(f)
+existing.update(server=supplied['server'], token=supplied['token'])
+with open(sys.argv[1], 'w') as f: json.dump(existing, f)
+PY
+fi
 unset secret
 bash "$temporary/install.sh" --config "$temporary/lightprobe-agent.json" --binary "$temporary/lightprobe-agent-linux-$arch"

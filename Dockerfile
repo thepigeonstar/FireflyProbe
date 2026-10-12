@@ -7,7 +7,8 @@ RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags="-s -w" -o
 FROM node:24-bookworm-slim
 WORKDIR /app
 ENV NODE_ENV=production HOST=0.0.0.0 PORT=8080 DATA_DIR=/app/data
-COPY package.json ./
+COPY package.json package-lock.json ./
+RUN npm ci --omit=dev --omit=optional --ignore-scripts
 COPY server/ ./server/
 COPY web/ ./web/
 COPY tools/ ./tools/

@@ -10,13 +10,14 @@ import { brandDefaults, brandView, validateBrand } from './brand.mjs';
 import { createRates, nodeCost, costSummary } from './costs.mjs';
 import { alarmDefaults, inQuiet, processAlarms } from './alarms.mjs';
 import { createBackups, backupName, receiveRestore } from './backups.mjs';
+import { createVault, createSSH, sshFields } from './ssh.mjs';
 
 const derive = promisify(scrypt);
 const sha = s => createHash('sha256').update(s).digest('hex');
 const token = () => randomBytes(32).toString('hex');
 const defaults = { timezone: 'Asia/Shanghai', interval: 5, offline_seconds: 45, keep_days: 180, trend_days: 7, report_enabled: false, report_hour: 8, report_minute: 0, thresholds: [80, 90, 95], telegram_token: '', telegram_chat: '' };
 const staticDir = fileURLToPath(new URL('../web/', import.meta.url));
-const publicFiles = new Map(['index.html', 'app.js', 'features.js','style.css','features.css', 'firefly.svg','public.html','public.js'].map(f => [f, readFileSync(join(staticDir, f))]));
+const publicFiles = new Map(['index.html', 'app.js', 'features.js','style.css','features.css','management.js','management.css', 'firefly.svg','public.html','public.js'].map(f => [f, readFileSync(join(staticDir, f))]));
 const downloads = new Map([
   ['/install-agent.sh', fileURLToPath(new URL('../agent/bootstrap.sh', import.meta.url))],
   ['/downloads/install.sh', fileURLToPath(new URL('../agent/install.sh', import.meta.url))],
@@ -84,6 +85,15 @@ export async function createApp(options = {}) {
   const publicURL = options.publicURL ?? process.env.PUBLIC_URL ?? '';
   if (secure && !publicURL.startsWith('https://')) throw new Error('安全 Cookie 模式需要 HTTPS PUBLIC_URL');
   let appOrigin = publicURL ? new URL(publicURL).origin : '';
+  const vault=createVault(dirname(dbPath));
+  const ssh=createSSH({db,vault,publicURL,bootstrap:readFileSync(fileURLToPath(new URL('../agent/bootstrap.sh',import.meta.url)),'utf8'),ClientClass:options.sshClient});
+  function configuredNode(input,old={},id=old.id) {
+    const fields={...nodeFields({...old,...input}),...sshFields(input,old)};
+    if(input.ssh_password!==undefined){if(typeof input.ssh_password!=='string'||input.ssh_password.length>1024||input.ssh_password.includes('\0'))fail(400,'SSH 密码格式无效');if(input.ssh_password)fields.ssh_password=vault.seal(input.ssh_password,id);}
+    if(input.ssh_clear===true)fields.ssh_password='';
+    if(fields.ssh_host!==(old.ssh_host??'')||fields.ssh_port!==(old.ssh_port??22))fields.ssh_fingerprint='';
+    return fields;
+  }
   const now = () => Math.floor(Date.now()/1000);
   const getNodes = () => db.prepare('SELECT * FROM nodes ORDER BY sort,name').all();
   const safeSettings = () => ({ ...settings, brand_logo:undefined, brand_favicon:undefined, telegram_token: undefined, telegram_configured: Boolean(settings.telegram_token && settings.telegram_chat) });
@@ -104,7 +114,9 @@ export async function createApp(options = {}) {
     return getNodes().map(n => {
       const live = latest.get(n.id), seen = live?.received ?? n.last_seen;
       const status = !n.enabled ? 'disabled' : !seen ? 'pending' : now()-seen > settings.offline_seconds ? 'offline' : 'online';
-      const { token_hash, ...safe } = n;
+      const { token_hash,ssh_password,agent_secret, ...safe } = n;
+      safe.ssh_configured=Boolean(ssh_password);
+      safe.ssh_job=ssh.recent(n.id);
       return { ...safe, last_version:live?.metrics?.version??n.last_version, last_seen: seen, status, metrics: status === 'online' ? live?.metrics ?? null : null, traffic: dailyTotals(db,n,today), cost:nodeCost(n,rates), expired: Boolean(n.expires && n.expires < today),maintenance:n.maintenance_until>now() };
     });
   };
@@ -215,7 +227,7 @@ export async function createApp(options = {}) {
   }
   const writeNode=(id,n)=>{publicCache=null;return db.prepare(`UPDATE nodes SET ${Object.keys(n).map(k=>k+'=?').join(',')} WHERE id=?`).run(...Object.values(n),id);};
   async function restoreBackup(req) {
-    if(backups.busy||restoring)fail(409,'已有备份或恢复正在进行');
+    if(backups.busy||restoring||getNodes().some(n=>ssh.busy(n.id)))fail(409,'已有备份、恢复或 SSH 部署正在进行');
     const epoch=restoreEpoch,incoming=dbPath+'.incoming-'+randomUUID();let ownsLock=false;
     try {
       await receiveRestore(req,incoming);
@@ -224,9 +236,9 @@ export async function createApp(options = {}) {
       try {
         const saved=JSON.parse(candidate.prepare("SELECT value FROM settings WHERE key='config'").get()?.value??'{}');
         settingsFields({...initial,...saved},{...initial,...saved});
-        const nodes=candidate.prepare('SELECT * FROM nodes').all();if(nodes.length>200)fail(400,'备份节点超过 200 台');for(const n of nodes)nodeFields(n);
+        const nodes=candidate.prepare('SELECT * FROM nodes').all();if(nodes.length>200)fail(400,'备份节点超过 200 台');for(const n of nodes){nodeFields(n);sshFields(n);if(typeof n.ssh_fingerprint!=="string"||n.ssh_fingerprint&& !/^SHA256:[A-Za-z0-9+/]{43}$/.test(n.ssh_fingerprint))fail(400,"备份 SSH 指纹无效");}
       }finally{candidate.close();}
-      if(restoring||backups.busy||epoch!==restoreEpoch)fail(409,'已有恢复操作，请重新登录后重试');
+      if(restoring||backups.busy||epoch!==restoreEpoch||getNodes().some(n=>ssh.busy(n.id)))fail(409,'已有恢复或部署操作，请稍后重试');
       restoring=true;
       ownsLock=true;
       while(workerBusy||fx.busy)await new Promise(r=>setTimeout(r,20));
@@ -250,7 +262,7 @@ export async function createApp(options = {}) {
       }finally{db.exec('DETACH DATABASE restored');}
       settings={...initial,...JSON.parse(db.prepare("SELECT value FROM settings WHERE key='config'").get()?.value??'{}')};
       notificationGraceUntil=now()+settings.offline_seconds;
-      restoreEpoch++;
+      restoreEpoch++;ssh.reset();
       publicCache=null;
       sessions.clear();latest.clear();noticeState.clear();
     }finally{if(ownsLock)restoring=false;const cleanup=attempt=>{try{for(const suffix of ['','-wal','-shm'])rmSync(incoming+suffix,{force:true});}catch(e){if(attempt<12&&['EPERM','EBUSY','EACCES'].includes(e.code))setTimeout(()=>cleanup(attempt+1),5000).unref();else console.error('Restore cleanup:',e.name);}};cleanup(0);}
@@ -301,7 +313,10 @@ export async function createApp(options = {}) {
         const session=auth(req,method!=='GET');
         if(path==='/api/session'&&method==='GET') return send(res,200,{csrf:session.csrf,username});
         if(path==='/api/logout'&&method==='POST') {sessions.delete(session.cookie);res.setHeader('Set-Cookie','lp_session=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0');return send(res,200,{ok:true});}
-        if(path==='/api/nodes'&&method==='GET') {const rates=fx.read();const {rates:unused,...fxInfo}=rates;return send(res,200,{nodes:snapshot(),settings:safeSettings(),cost_summary:costSummary(getNodes(),rates),fx_info:fxInfo,server_time:now(),version:'0.2.0',agent_version:'0.2.0'});}
+        const sshRoute=/^\/api\/nodes\/([a-f0-9-]{36})\/ssh\/(probe|trust|test|deploy)$/.exec(path);
+        if(sshRoute&&method==='POST'){const [unused,id,action]=sshRoute;if(action==='probe')return send(res,200,await ssh.probe(id));if(action==='trust'){const input=await body(req);ssh.trust(id,input.fingerprint);return send(res,200,{ok:true});}if(action==='test')return send(res,200,await ssh.test(id));return send(res,202,ssh.deploy(id));}
+        const jobRoute=/^\/api\/ssh\/jobs\/([a-f0-9-]{36})$/.exec(path);if(jobRoute&&method==='GET')return send(res,200,ssh.status(jobRoute[1]));
+        if(path==='/api/nodes'&&method==='GET') {const rates=fx.read();const {rates:unused,...fxInfo}=rates;return send(res,200,{nodes:snapshot(),settings:safeSettings(),cost_summary:costSummary(getNodes(),rates),fx_info:fxInfo,server_time:now(),version:'0.2.1',agent_version:'0.2.0'});}
         if(path==='/api/costs'&&method==='GET')return send(res,200,{...costSummary(getNodes(),fx.read()),fx:fx.read()});
         if(path==='/api/fx/refresh'&&method==='POST')return send(res,200,await fx.refresh(true));
         if(path==='/api/backups'&&method==='GET')return send(res,200,backups.list());
@@ -309,18 +324,10 @@ export async function createApp(options = {}) {
         const download=/^\/api\/backups\/([^/]+)$/.exec(path);
         if(download&&method==='GET'){if(!backupName.test(download[1])||!backups.list().some(x=>x.name===download[1]))fail(404,'备份不存在');const file=join(backups.directory,download[1]);res.setHeader('Content-Type','application/vnd.sqlite3');res.setHeader('Content-Disposition',`attachment; filename="${download[1]}"`);res.setHeader('Content-Length',statSync(file).size);await pipeline(createReadStream(file),res);return;}
         if(path==='/api/backups/restore'&&method==='POST'){await restoreBackup(req);fx.refresh().catch(()=>{});res.setHeader('Set-Cookie','lp_session=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0');return send(res,200,{ok:true,message:'备份已恢复，请重新登录'});}
-        if(path==='/api/nodes/batch'&&method==='POST') {
-          const input=await body(req);if(!Array.isArray(input.ids)||!input.ids.length||input.ids.length>200||input.ids.some(x=>typeof x!=='string')||typeof input.patch!=='object'||!input.patch||Array.isArray(input.patch))fail(400,'批量配置无效');
-          const ids=[...new Set(input.ids)],allowed=new Set(['group_name','quota','billing_day','billing_mode','expires','enabled','alerts_enabled','public_visible','cost_active','maintenance_minutes','sort_start']);
-          if(Object.keys(input.patch).some(k=>!allowed.has(k)))fail(400,'不支持的批量字段');
-          const rows=ids.map(id=>{const node=db.prepare('SELECT * FROM nodes WHERE id=?').get(id);if(!node)fail(404,'所选节点不存在');return node;});
-          const updates=rows.map((node,i)=>{const patch={...input.patch};if(patch.maintenance_minutes!==undefined){const mins=finite(patch.maintenance_minutes,0,10080,'维护分钟',true);patch.maintenance_until=mins?now()+mins*60:0;delete patch.maintenance_minutes;}if(patch.sort_start!==undefined){patch.sort=finite(patch.sort_start,-10000,10000,'排序起点',true)+i;delete patch.sort_start;}return nodeFields({...node,...patch});});
-          db.exec('BEGIN');try{ids.forEach((id,i)=>writeNode(id,updates[i]));db.exec('COMMIT');}catch(e){db.exec('ROLLBACK');throw e;}return send(res,200,{ok:true,count:ids.length});
-        }
         if(path==='/api/nodes'&&method==='POST') {
           if(getNodes().length>=200) fail(400,'首版最多支持 200 台机器');
-          const n=nodeFields(await body(req)), id=randomUUID(), secret=token();
-          const fields={id,token_hash:sha(secret),...n,created:now()};db.prepare(`INSERT INTO nodes(${Object.keys(fields).join(',')}) VALUES(${Object.keys(fields).map(()=>'?').join(',')})`).run(...Object.values(fields));
+          const input=await body(req),id=randomUUID(),secret=token(),n=configuredNode(input,{},id);
+          const fields={id,token_hash:sha(secret),agent_secret:vault.seal(secret,id),...n,created:now()};db.prepare(`INSERT INTO nodes(${Object.keys(fields).join(',')}) VALUES(${Object.keys(fields).map(()=>'?').join(',')})`).run(...Object.values(fields));
           publicCache=null;
           return send(res,201,{id,token:secret,public_url:publicURL});
         }
@@ -332,14 +339,14 @@ export async function createApp(options = {}) {
             flushMinute(node.id,latest.get(node.id));
             return send(res,200,{hours,bucket,minutes:db.prepare('SELECT CAST(minute/? AS INTEGER)*? minute,SUM(rx)/SUM(count) rx,SUM(tx)/SUM(count) tx,SUM(cpu)/SUM(count) cpu,SUM(mem)/SUM(count) mem FROM minutes WHERE node_id=? AND minute>=? GROUP BY CAST(minute/? AS INTEGER) ORDER BY minute').all(bucket,bucket,node.id,cutoff,bucket),daily:db.prepare('SELECT date,SUM(rx) rx,SUM(tx) tx FROM daily WHERE node_id=? GROUP BY date ORDER BY date DESC LIMIT 180').all(node.id)});
           }
-          if(match[2]==='token'&&method==='POST') {const secret=token();db.prepare('UPDATE nodes SET token_hash=? WHERE id=?').run(sha(secret),node.id);return send(res,200,{id:node.id,token:secret,public_url:publicURL});}
+          if(match[2]==='token'&&method==='POST') {const secret=token();if(ssh.busy(node.id))fail(409,'部署中不能重新生成密钥');db.prepare('UPDATE nodes SET token_hash=?,agent_secret=? WHERE id=?').run(sha(secret),vault.seal(secret,node.id),node.id);return send(res,200,{id:node.id,token:secret,public_url:publicURL});}
           if(!match[2]&&method==='PUT') {
-            const n=nodeFields({...node,...await body(req)});
+            if(ssh.busy(node.id))fail(409,'部署中不能修改服务器配置');const input=await body(req);if(ssh.busy(node.id))fail(409,'部署中不能修改服务器配置');const n=configuredNode(input,node);
             if(n.interface!==node.interface && db.prepare('SELECT 1 FROM daily WHERE node_id=? LIMIT 1').get(node.id)) fail(409,'已有流量历史后不能更换统计网卡；请新建节点，避免重复计费');
             writeNode(node.id,n);
             return send(res,200,{ok:true});
           }
-          if(!match[2]&&method==='DELETE') {db.prepare('DELETE FROM nodes WHERE id=?').run(node.id);latest.delete(node.id);noticeState.delete(node.id);publicCache=null;return send(res,200,{ok:true});}
+          if(!match[2]&&method==='DELETE') {if(ssh.busy(node.id))fail(409,'部署中不能删除服务器');db.prepare('DELETE FROM nodes WHERE id=?').run(node.id);latest.delete(node.id);noticeState.delete(node.id);publicCache=null;return send(res,200,{ok:true});}
         }
         if(path==='/api/settings'&&method==='GET') return send(res,200,editableSettings());
         if(path==='/api/settings'&&method==='PUT') {const updated=settingsFields(await body(req),settings);db.prepare("INSERT INTO settings VALUES('config',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value").run(JSON.stringify(updated));settings=updated;publicCache=null;return send(res,200,editableSettings());}
@@ -368,7 +375,7 @@ export async function createApp(options = {}) {
     db.prepare('DELETE FROM daily WHERE date<?').run(dayKey(new Date((stamp-settings.keep_days*86400)*1000),settings.timezone));
     db.prepare("DELETE FROM outbox WHERE status='sent' AND created<?").run(stamp-90*86400);
   },3600000);maintenance.unref();
-  return {server,get db(){return db;},snapshot,notifications,close:async()=>{closed=true;clearInterval(tick);clearInterval(flush);clearInterval(maintenance);clearInterval(extrasTick);if(db.isOpen)for(const [id,l] of latest){db.prepare('UPDATE nodes SET last_seen=? WHERE id=?').run(l.received,id);flushMinute(id,l);}await new Promise(r=>server.close(r));while(workerBusy||fx.busy||backups.busy)await new Promise(r=>setTimeout(r,50));if(db.isOpen)db.close();}};
+  return {server,get db(){return db;},snapshot,notifications,close:async()=>{closed=true;ssh.cancelAll();clearInterval(tick);clearInterval(flush);clearInterval(maintenance);clearInterval(extrasTick);if(db.isOpen)for(const [id,l] of latest){db.prepare('UPDATE nodes SET last_seen=? WHERE id=?').run(l.received,id);flushMinute(id,l);}await new Promise(r=>server.close(r));while(workerBusy||fx.busy||backups.busy)await new Promise(r=>setTimeout(r,50));if(db.isOpen)db.close();}};
 }
 function formatBytes(bytes) {const units=['B','KiB','MiB','GiB','TiB'];let i=0;while(bytes>=1024&&i<4){bytes/=1024;i++;}return bytes.toFixed(1)+' '+units[i];}
 if(process.argv[1] && import.meta.url===pathToFileURL(resolve(process.argv[1])).href) {

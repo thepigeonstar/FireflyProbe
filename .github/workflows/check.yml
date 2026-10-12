@@ -13,6 +13,7 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version-file: agent/go.mod
+      - run: npm ci --omit=optional --ignore-scripts
       - run: npm test
       - run: go test ./... && go vet ./...
         working-directory: agent

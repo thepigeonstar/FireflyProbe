@@ -3,10 +3,10 @@ import {mkdirSync,readdirSync,statSync,rmSync,createWriteStream,openSync,readSyn
 import {join} from 'node:path';
 import {pipeline} from 'node:stream/promises';
 import {Transform} from 'node:stream';
-export const backupName=/^(backup|migration-v1)-[a-zA-Z0-9-]+\.sqlite$/;
+export const backupName=/^(backup|migration-v[12])-[a-zA-Z0-9-]+\.sqlite$/;
 export function createBackups(getDB,dataDir,getSettings) {
   const directory=join(dataDir,'backups');mkdirSync(directory,{recursive:true,mode:0o700});let busy=false,pending='';
-  const list=()=>readdirSync(directory).filter(x=>backupName.test(x)&&x!==pending&&(x.startsWith('migration-v1-')||existsSync(join(directory,x+'.ready')))).map(name=>{const s=statSync(join(directory,name));return {name,size:s.size,created:Math.floor(s.mtimeMs/1000),modified:s.mtimeMs};}).sort((a,b)=>b.modified-a.modified);
+  const list=()=>readdirSync(directory).filter(x=>backupName.test(x)&&x!==pending&&(/^migration-v[12]-/.test(x)||existsSync(join(directory,x+'.ready')))).map(name=>{const s=statSync(join(directory,name));return {name,size:s.size,created:Math.floor(s.mtimeMs/1000),modified:s.mtimeMs};}).sort((a,b)=>b.modified-a.modified);
   async function create(reason='manual') {
     if(busy){const e=new Error('已有备份操作正在进行');e.status=409;throw e;}busy=true;
     const name='backup-'+Date.now()+'-'+reason+'.sqlite',file=join(directory,name);pending=name;
@@ -29,7 +29,7 @@ export async function receiveRestore(req,file) {
   try {
     if(db.prepare('PRAGMA quick_check').get().quick_check!=='ok')throw new Error('备份数据库检查失败');
     const version=db.prepare('PRAGMA user_version').get().user_version;
-    if(version<1||version>2)throw new Error('不支持的备份版本');
+    if(version<1||version>3)throw new Error('不支持的备份版本');
     const schema=db.prepare("SELECT name,type FROM sqlite_schema WHERE name NOT LIKE 'sqlite_%'").all();
     const allowed=new Set(['nodes','daily','minutes','settings','outbox','alerts']);
     if(schema.some(x=>x.type!=='table'||!allowed.has(x.name)))throw new Error('备份包含不支持的数据库对象');

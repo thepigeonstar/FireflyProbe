@@ -6,11 +6,11 @@ export function openStore(file) {
   mkdirSync(dirname(file), { recursive: true });
   const db = new DatabaseSync(file);
   const schemaVersion = db.prepare('PRAGMA user_version').get().user_version;
-  if(schemaVersion>2) {db.close();throw new Error('数据库来自更高版本，请升级主控后再读取');}
+  if(schemaVersion>3) {db.close();throw new Error('数据库来自更高版本，请升级主控后再读取');}
   // Preserve a consistent pre-migration snapshot when opening a v1 database.
-  if(schemaVersion===1) {
+  if(schemaVersion===1||schemaVersion===2) {
     const backupDir=join(dirname(file),'backups');mkdirSync(backupDir,{recursive:true,mode:0o700});
-    const copy=join(backupDir,'migration-v1-'+Date.now()+'.sqlite');
+    const copy=join(backupDir,'migration-v'+schemaVersion+'-'+Date.now()+'.sqlite');
     if(!existsSync(copy)){db.prepare('VACUUM INTO ?').run(copy);chmodSync(copy,0o600);}
   }
   db.exec(`PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL; PRAGMA foreign_keys=ON; PRAGMA busy_timeout=3000;
@@ -38,10 +38,10 @@ export function openStore(file) {
     );
     `);
   const columns=new Set(db.prepare('PRAGMA table_info(nodes)').all().map(x=>x.name));
-  for(const [name,type] of Object.entries({cost_amount:'REAL NOT NULL DEFAULT 0',cost_currency:"TEXT NOT NULL DEFAULT 'CNY'",cost_months:'INTEGER NOT NULL DEFAULT 1',cost_active:'INTEGER NOT NULL DEFAULT 1',alerts_enabled:'INTEGER NOT NULL DEFAULT 1',maintenance_until:'INTEGER NOT NULL DEFAULT 0',public_visible:'INTEGER NOT NULL DEFAULT 0',last_version:"TEXT NOT NULL DEFAULT ''"})) {
+  for(const [name,type] of Object.entries({cost_amount:'REAL NOT NULL DEFAULT 0',cost_currency:"TEXT NOT NULL DEFAULT 'CNY'",cost_months:'INTEGER NOT NULL DEFAULT 1',cost_active:'INTEGER NOT NULL DEFAULT 1',alerts_enabled:'INTEGER NOT NULL DEFAULT 1',maintenance_until:'INTEGER NOT NULL DEFAULT 0',public_visible:'INTEGER NOT NULL DEFAULT 0',last_version:"TEXT NOT NULL DEFAULT ''",ssh_host:"TEXT NOT NULL DEFAULT ''",ssh_port:'INTEGER NOT NULL DEFAULT 22',ssh_user:"TEXT NOT NULL DEFAULT 'root'",ssh_password:"TEXT NOT NULL DEFAULT ''",ssh_fingerprint:"TEXT NOT NULL DEFAULT ''",agent_secret:"TEXT NOT NULL DEFAULT ''"})) {
     if(!columns.has(name))db.exec(`ALTER TABLE nodes ADD COLUMN ${name} ${type}`);
   }
-  db.exec('CREATE TABLE IF NOT EXISTS alerts (node_id TEXT NOT NULL REFERENCES nodes(id) ON DELETE CASCADE, kind TEXT NOT NULL, since INTEGER NOT NULL, active INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(node_id,kind)); PRAGMA user_version=2;');
+  db.exec('CREATE TABLE IF NOT EXISTS alerts (node_id TEXT NOT NULL REFERENCES nodes(id) ON DELETE CASCADE, kind TEXT NOT NULL, since INTEGER NOT NULL, active INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(node_id,kind)); PRAGMA user_version=3;');
   return db;
 }
 

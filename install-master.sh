@@ -28,6 +28,7 @@ if [[ "$update" == auto ]]; then
     update=false
   fi
 fi
+
 if [[ "$update" == true ]]; then
   [[ -f "$target/.env" && -f "$target/compose.yaml" ]] || { echo '更新需指定原安装目录。' >&2; exit 1; }
 elif [[ -d "$target" ]] && [[ -n "$(ls -A -- "$target")" ]]; then
@@ -67,6 +68,11 @@ if grep -q "from './costs.mjs'" "$temporary/source/server/main.mjs"; then
     [[ -f "$temporary/source/$required" ]] || { echo "仓库缺少 $required，请上传完整新版项目。" >&2; exit 1; }
   done
 fi
+if grep -q "from './ssh.mjs'" "$temporary/source/server/main.mjs"; then
+  for required in package-lock.json server/ssh.mjs web/management.js web/management.css; do
+    [[ -f "$temporary/source/$required" ]] || { echo "仓库缺少 $required，请上传完整新版项目。" >&2; exit 1; }
+  done
+fi
 if [[ "$update" == true ]]; then
   expected_project=$(basename "$target")
   container=$(cd "$target" && docker compose ps -aq lightprobe)
@@ -77,7 +83,7 @@ if [[ "$update" == true ]]; then
 fi
 mkdir -p -- "$target"
 # Copy a fixed list. Never copy .env, data, credentials, or change the Compose project name.
-for item in agent bin server web tools tests package.json Dockerfile compose.yaml compose.https.yaml Caddyfile setup.sh update.sh install-master.sh README.md verification.md 功能与费用说明.md UPDATE-v0.2.0.md GITHUB发布指南.md 开始部署.md .dockerignore; do
+for item in agent bin server web tools tests package.json package-lock.json Dockerfile compose.yaml compose.https.yaml Caddyfile setup.sh update.sh install-master.sh README.md verification.md 功能与费用说明.md UPDATE-v0.2.0.md UPDATE-v0.2.1.md GITHUB发布指南.md 开始部署.md .dockerignore; do
   [[ -e "$temporary/source/$item" ]] && cp -a -- "$temporary/source/$item" "$target/"
 done
 cd -- "$target"
