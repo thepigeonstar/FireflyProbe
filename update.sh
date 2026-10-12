@@ -26,7 +26,7 @@ else
 fi
 docker compose up --build -d --force-recreate lightprobe
 for ((attempt=0; attempt<15; attempt++)); do
-  if page_html=$(curl -fsS http://127.0.0.1:8080/ 2>/dev/null); then
+  if page_html=$(curl -fsSL http://127.0.0.1:8080/ 2>/dev/null); then
     if [[ "$page_html" == *"data-build=\"$expected_version\""* ]]; then
       echo "已验证：运行中的主控页面是 Firefly Probe v$expected_version。浏览器按 Ctrl+F5 刷新。"
       exit 0

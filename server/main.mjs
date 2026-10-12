@@ -3,8 +3,7 @@ import { readFileSync, createReadStream, statSync, rmSync } from 'node:fs';
 import { pipeline } from 'node:stream/promises';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { resolve, join, dirname } from 'node:path';
-import { randomBytes, randomUUID, createHash, timingSafeEqual, scrypt } from 'node:crypto';
-import { promisify } from 'node:util';
+import { randomBytes, randomUUID, createHash } from 'node:crypto';
 import { openStore, dayKey, validDate, dailyTotals } from './store.mjs';
 import { brandDefaults, brandView, validateBrand } from './brand.mjs';
 import { createRates, nodeCost, costSummary } from './costs.mjs';
@@ -13,13 +12,13 @@ import { createBackups, backupName, receiveRestore } from './backups.mjs';
 import { createVault, createSSH, sshFields } from './ssh.mjs';
 import {notificationSelected,validateTargets} from './notification-targets.mjs';
 import {networkChart} from './network-chart.mjs';
+import {createAccount,validatePaths} from './account.mjs';
 
-const derive = promisify(scrypt);
 const sha = s => createHash('sha256').update(s).digest('hex');
 const token = () => randomBytes(32).toString('hex');
 const defaults = { timezone: 'Asia/Shanghai', interval: 5, offline_seconds: 45, keep_days: 180, trend_days: 7, report_enabled: false, report_hour: 8, report_minute: 0, thresholds: [80, 90, 95], telegram_token: '', telegram_chat: '' };
 const staticDir = fileURLToPath(new URL('../web/', import.meta.url));
-const publicFiles = new Map(['index.html', 'app.js', 'features.js','style.css','features.css','management.js','management.css','background.js','background.css', 'firefly.svg','public.html','public.js'].map(f => [f, readFileSync(join(staticDir, f))]));
+const publicFiles = new Map(['index.html', 'app.js', 'features.js','style.css','features.css','management.js','management.css','background.js','background.css','theme.js','theme.css', 'firefly.svg','public.html','public.js'].map(f => [f, readFileSync(join(staticDir, f))]));
 const downloads = new Map([
   ['/install-agent.sh', fileURLToPath(new URL('../agent/bootstrap.sh', import.meta.url))],
   ['/downloads/install.sh', fileURLToPath(new URL('../agent/install.sh', import.meta.url))],
@@ -65,20 +64,20 @@ function settingsFields(input, old) {
   for(const k of ['quiet_start','quiet_end'])if(input[k]!==undefined){if(typeof input[k]!=='string'||!/^([01]\d|2[0-3]):[0-5]\d$/.test(input[k]))fail(400,'静默时间格式无效');s[k]=input[k];}
   if(input.expiry_days!==undefined){if(!Array.isArray(input.expiry_days)||input.expiry_days.length>8)fail(400,'最多八个到期提醒时间');s.expiry_days=[...new Set(input.expiry_days.map(x=>finite(x,0,90,'提前提醒天数',true)))].sort((a,b)=>b-a);}
   if(input.notification_targets!==undefined){try{s.notification_targets=validateTargets(input.notification_targets);}catch(e){fail(400,e.message);}}
+  Object.assign(s,validatePaths(input,old));
   return s;
 }
 
 export async function createApp(options = {}) {
   const password = options.password ?? process.env.ADMIN_PASSWORD;
-  if (!password || password.length < 12 || password.includes('REPLACE_WITH')) throw new Error('请设置至少 12 位的 ADMIN_PASSWORD，不能使用示例占位密码');
   const username = options.username ?? process.env.ADMIN_USER ?? 'admin';
-  const salt = randomBytes(16), passwordHash = await derive(password, salt, 64);
   const dbPath=resolve(options.dbPath ?? join(process.env.DATA_DIR ?? 'data', 'lightprobe.sqlite'));
-  const db = openStore(dbPath);let restoring=false,restoreEpoch=0,publicCache=null;
-  const initial = { ...defaults, ...brandDefaults,...alarmDefaults, timezone: process.env.TIMEZONE || defaults.timezone };
+  const db = openStore(dbPath);let restoring=false,restoreEpoch=0,publicCache=null;const account=await createAccount(db,username,password);
+  const initial = { ...defaults, ...brandDefaults,...alarmDefaults,admin_path:process.env.ADMIN_PATH||'/admin',public_path:process.env.PUBLIC_PATH||'/', timezone: process.env.TIMEZONE || defaults.timezone };
   new Intl.DateTimeFormat('en', { timeZone: initial.timezone });
   const savedSettings=db.prepare("SELECT value FROM settings WHERE key='config'").get();
   let settings = { ...initial, ...JSON.parse(savedSettings?.value ?? '{}') };
+  Object.assign(settings,validatePaths({},settings));
   if(!savedSettings)db.prepare("INSERT INTO settings VALUES('config',?)").run(JSON.stringify(settings));
   const sessions = new Map(), latest = new Map(), loginLimits = new Map(), noticeState = new Map();
   const fx=createRates(()=>db,{disableExternal:options.disableExternal??options.disableTelegram,fetchRates:options.fetchRates});
@@ -99,8 +98,8 @@ export async function createApp(options = {}) {
   }
   const now = () => Math.floor(Date.now()/1000);
   const getNodes = () => db.prepare('SELECT * FROM nodes ORDER BY sort,name').all();
-  const safeSettings = () => ({ ...settings, brand_logo:undefined, brand_favicon:undefined, telegram_token: undefined, telegram_configured: Boolean(settings.telegram_token && settings.telegram_chat) });
-  const editableSettings = () => ({ ...settings, telegram_configured: Boolean(settings.telegram_token && settings.telegram_chat) });
+  const safeSettings = () => ({ ...settings,admin_user:account.username, brand_logo:undefined, brand_favicon:undefined, telegram_token: undefined, telegram_configured: Boolean(settings.telegram_token && settings.telegram_chat) });
+  const editableSettings = () => ({ ...settings,admin_user:account.username, telegram_configured: Boolean(settings.telegram_token && settings.telegram_chat) });
   const send = (res, status, data) => { res.writeHead(status, { 'Content-Type':'application/json; charset=utf-8' }); res.end(JSON.stringify(data)); };
   const enqueue = (key, message) => {
     if (!settings.telegram_token || !settings.telegram_chat) return false;
@@ -135,7 +134,7 @@ export async function createApp(options = {}) {
     const byMinute=new Map(rows.map(row=>[row.minute,{...row}]));
     const visible=new Set(visibleNodes.map(n=>n.id));
     for(const [nodeId,live] of latest){if(!visible.has(nodeId)||live.minute<start||live.minute>stamp)continue;const stored=db.prepare('SELECT rx/count rx,tx/count tx FROM minutes WHERE node_id=? AND minute=?').get(nodeId,live.minute),a=live.aggregate,row=byMinute.get(live.minute)||{minute:live.minute,rx:0,tx:0};row.rx+=a.rx/a.count-(stored?.rx||0);row.tx+=a.tx/a.count-(stored?.tx||0);byMinute.set(live.minute,row);}
-    const data={brand:brandView(settings),id:node?.id??'network',name:node?.name??'当前总网速',hours:24,start,server_time:stamp,minutes:[...byMinute.values()].sort((a,b)=>a.minute-b.minute).map(r=>({minute:r.minute,rx:Math.max(0,r.rx),tx:Math.max(0,r.tx)}))};data.timezone=settings.timezone;data.chart_svg=networkChart(data);data.peak=Math.max(0,...data.minutes.map(r=>r.rx+r.tx));data.average=data.minutes.length?data.minutes.reduce((sum,r)=>sum+r.rx+r.tx,0)/data.minutes.length:0;publicHistoryCache.set(cacheKey,{stamp,data,signature});if(publicHistoryCache.size>201)publicHistoryCache.delete(publicHistoryCache.keys().next().value);return data;
+    const data={brand:brandView(settings),public_path:settings.public_path,id:node?.id??'network',name:node?.name??'当前总网速',hours:24,start,server_time:stamp,minutes:[...byMinute.values()].sort((a,b)=>a.minute-b.minute).map(r=>({minute:r.minute,rx:Math.max(0,r.rx),tx:Math.max(0,r.tx)}))};data.timezone=settings.timezone;data.chart_svg=networkChart(data);data.peak=Math.max(0,...data.minutes.map(r=>r.rx+r.tx));data.average=data.minutes.length?data.minutes.reduce((sum,r)=>sum+r.rx+r.tx,0)/data.minutes.length:0;publicHistoryCache.set(cacheKey,{stamp,data,signature});if(publicHistoryCache.size>201)publicHistoryCache.delete(publicHistoryCache.keys().next().value);return data;
   }
   function publicChart(id){const {minutes,...chart}=publicHistory(id);return chart;}
   async function telegram(message) {
@@ -231,9 +230,10 @@ export async function createApp(options = {}) {
     latest.set(node.id,{received:stamp,minute,metrics,aggregate:a});
   }
   async function body(req) {
-    const epoch=restoreEpoch;let bytes=0; const chunks=[];
+    const epoch=restoreEpoch,authEpoch=account.generation;let bytes=0; const chunks=[];
     for await (const chunk of req) { bytes+=chunk.length; if(bytes>256*1024) fail(413,'请求过大'); chunks.push(chunk); }
     if(restoring)fail(503,'正在恢复备份，请稍后重试');
+    if(authEpoch!==account.generation)fail(401,'账号已更新，请重新登录');
     if(epoch!==restoreEpoch)fail(409,'数据已恢复，请重试请求');
     try { const data=JSON.parse(Buffer.concat(chunks).toString()); if(!data||Array.isArray(data)||typeof data!=='object') fail(400,'需要 JSON 对象'); return data; } catch(e) { if(e.status) throw e; fail(400,'JSON 格式无效'); }
   }
@@ -263,6 +263,7 @@ export async function createApp(options = {}) {
       while(workerBusy||fx.busy)await new Promise(r=>setTimeout(r,20));
       for(const [id,l] of latest){flushMinute(id,l);db.prepare('UPDATE nodes SET last_seen=? WHERE id=?').run(l.received,id);}
       await backups.create('before-restore');
+      const currentAccount=db.prepare("SELECT value FROM settings WHERE key='admin_auth'").get().value;
       // Keep the live connection open and restore all tables in one transaction.
       // This also works on Windows where prepared statements may retain file handles.
       db.prepare('ATTACH DATABASE ? AS restored').run(incoming);
@@ -275,6 +276,7 @@ export async function createApp(options = {}) {
             db.exec(`INSERT INTO main.${table}(${columns}) SELECT ${columns} FROM restored.${table}`);
           }
           db.prepare("UPDATE outbox SET event_key=event_key||?,status='failed',error='恢复后已取消旧待发送通知' WHERE status='pending'").run(':restored-'+randomUUID());
+          db.prepare("INSERT INTO settings VALUES('admin_auth',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value").run(currentAccount);
           db.exec('DELETE FROM alerts');
           db.exec("UPDATE sqlite_sequence SET seq=(SELECT COALESCE(MAX(id),0) FROM outbox) WHERE name='outbox'; COMMIT;");
         }catch(e){db.exec('ROLLBACK');throw e;}
@@ -298,7 +300,7 @@ export async function createApp(options = {}) {
       const publicNodeHistory=/^\/api\/public\/nodes\/([a-f0-9-]{36})\/history$/.exec(path);if(method==='GET'&&publicNodeHistory)return send(res,200,publicChart(publicNodeHistory[1]));
       if(method==='GET'&&path==='/api/public') {
         if(!settings.public_enabled)fail(404,'公开展示尚未启用');
-        if(!publicCache||now()-publicCache.created>=5){const nodes=snapshot().filter(n=>n.public_visible).map(n=>({id:n.id,name:n.name,group_name:n.group_name,status:n.status,last_seen:n.last_seen,metrics:settings.public_show_metrics&&n.metrics?{rx_speed:n.metrics.rx_speed,tx_speed:n.metrics.tx_speed,cpu:n.metrics.cpu,mem_percent:n.metrics.mem_total?n.metrics.mem_used/n.metrics.mem_total*100:0,disk_percent:n.metrics.disk_total?n.metrics.disk_used/n.metrics.disk_total*100:0}:undefined,traffic:settings.public_show_traffic?{today:n.traffic.today.rx+n.traffic.today.tx,month:n.traffic.month.rx+n.traffic.month.tx}:undefined}));publicCache={created:now(),payload:{brand:brandView(settings),nodes,network:settings.public_show_metrics?nodes.filter(n=>n.status!=='disabled').reduce((total,n)=>({rx:total.rx+(n.metrics?.rx_speed||0),tx:total.tx+(n.metrics?.tx_speed||0)}),{rx:0,tx:0}):undefined,show_network:settings.public_show_metrics,server_time:now()}};}
+        if(!publicCache||now()-publicCache.created>=5){const nodes=snapshot().filter(n=>n.public_visible).map(n=>({id:n.id,name:n.name,group_name:n.group_name,status:n.status,last_seen:n.last_seen,metrics:settings.public_show_metrics&&n.metrics?{rx_speed:n.metrics.rx_speed,tx_speed:n.metrics.tx_speed,cpu:n.metrics.cpu,mem_percent:n.metrics.mem_total?n.metrics.mem_used/n.metrics.mem_total*100:0,disk_percent:n.metrics.disk_total?n.metrics.disk_used/n.metrics.disk_total*100:0}:undefined,traffic:settings.public_show_traffic?{today:n.traffic.today.rx+n.traffic.today.tx,month:n.traffic.month.rx+n.traffic.month.tx}:undefined}));publicCache={created:now(),payload:{brand:brandView(settings),public_path:settings.public_path,nodes,network:settings.public_show_metrics?nodes.filter(n=>n.status!=='disabled').reduce((total,n)=>({rx:total.rx+(n.metrics?.rx_speed||0),tx:total.tx+(n.metrics?.tx_speed||0)}),{rx:0,tx:0}):undefined,show_network:settings.public_show_metrics,server_time:now()}};}
         return send(res,200,publicCache.payload);
       }
       // Only these public program files are downloadable; configuration and tokens are never served here.
@@ -317,27 +319,29 @@ export async function createApp(options = {}) {
         if(method==='POST'&&path==='/api/agent/report') { ingest(node,await body(req)); return send(res,200,{ok:true}); }
         fail(404,'接口不存在');
       }
-      if(method==='POST'&&path==='/api/login') {
+      if(method==='POST'&&path===settings.admin_path+'/api/login') {
         if(req.headers.origin && appOrigin && req.headers.origin!==appOrigin) fail(403,'来源无效');
         const ip=req.socket.remoteAddress ?? 'unknown';
         let limit=loginLimits.get(ip); if(!limit||limit.until<now()) { limit={count:0,until:now()+300}; if(loginLimits.size>=1000) loginLimits.delete(loginLimits.keys().next().value); loginLimits.set(ip,limit); }
         if(++limit.count>15 || loggingIn>=3) fail(429,'登录尝试过多，请五分钟后再试');
         const data=await body(req); if(typeof data.password!=='string'||data.password.length>256) fail(400,'密码无效');
-        loggingIn++; let candidate; try {candidate=await derive(data.password,salt,64);} finally {loggingIn--;}
-        if(data.username!==username||!timingSafeEqual(candidate,passwordHash)) fail(401,'用户名或密码错误');
+        loggingIn++;let valid;try{valid=await account.verify(data.password);}finally{loggingIn--;}
+        if(data.username!==account.username||!valid) fail(401,'用户名或密码错误');
         const id=token(),csrf=token(); if(sessions.size>=500) sessions.delete(sessions.keys().next().value);
         sessions.set(id,{csrf,expires:now()+43200});
         res.setHeader('Set-Cookie',`lp_session=${id}; HttpOnly; SameSite=Strict; Path=/; Max-Age=43200${secure?'; Secure':''}`);
-        return send(res,200,{csrf,username});
+        return send(res,200,{csrf,username:account.username});
       }
+      if(method==='POST'&&path.endsWith('/api/login'))fail(404,'接口不存在');
       if(path.startsWith('/api/')) {
         const session=auth(req,method!=='GET');
-        if(path==='/api/session'&&method==='GET') return send(res,200,{csrf:session.csrf,username});
+        if(path==='/api/account'&&method==='POST'){const result=await account.change(await body(req));sessions.clear();res.setHeader('Set-Cookie','lp_session=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0');return send(res,200,{...result,redirect_admin:settings.admin_path,message:'账号已更新，请重新登录'});}
+        if(path==='/api/session'&&method==='GET') return send(res,200,{csrf:session.csrf,username:account.username});
         if(path==='/api/logout'&&method==='POST') {sessions.delete(session.cookie);res.setHeader('Set-Cookie','lp_session=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0');return send(res,200,{ok:true});}
         const sshRoute=/^\/api\/nodes\/([a-f0-9-]{36})\/ssh\/(probe|trust|test|deploy)$/.exec(path);
         if(sshRoute&&method==='POST'){const [unused,id,action]=sshRoute;if(action==='probe')return send(res,200,await ssh.probe(id));if(action==='trust'){const input=await body(req);ssh.trust(id,input.fingerprint);return send(res,200,{ok:true});}if(action==='test')return send(res,200,await ssh.test(id));return send(res,202,ssh.deploy(id));}
         const jobRoute=/^\/api\/ssh\/jobs\/([a-f0-9-]{36})$/.exec(path);if(jobRoute&&method==='GET')return send(res,200,ssh.status(jobRoute[1]));
-        if(path==='/api/nodes'&&method==='GET') {const rates=fx.read();const {rates:unused,...fxInfo}=rates;return send(res,200,{nodes:snapshot(),settings:safeSettings(),cost_summary:costSummary(getNodes(),rates),fx_info:fxInfo,server_time:now(),version:'0.2.3',agent_version:'0.2.0'});}
+        if(path==='/api/nodes'&&method==='GET') {const rates=fx.read();const {rates:unused,...fxInfo}=rates;return send(res,200,{nodes:snapshot(),settings:safeSettings(),cost_summary:costSummary(getNodes(),rates),fx_info:fxInfo,server_time:now(),version:'0.2.4',agent_version:'0.2.0'});}
         const adminNetwork=/^\/api\/nodes\/([a-f0-9-]{36})\/network-history$/.exec(path);if(adminNetwork&&method==='GET')return send(res,200,publicHistory(adminNetwork[1],true));
         if(path==='/api/network/history'&&method==='GET')return send(res,200,publicHistory('network',true));
         if(path==='/api/costs'&&method==='GET')return send(res,200,{...costSummary(getNodes(),fx.read()),fx:fx.read()});
@@ -346,7 +350,7 @@ export async function createApp(options = {}) {
         if(path==='/api/backups'&&method==='POST'){for(const [id,l] of latest){flushMinute(id,l);db.prepare('UPDATE nodes SET last_seen=?,last_version=? WHERE id=?').run(l.received,l.metrics.version,id);}return send(res,201,await backups.create());}
         const download=/^\/api\/backups\/([^/]+)$/.exec(path);
         if(download&&method==='GET'){if(!backupName.test(download[1])||!backups.list().some(x=>x.name===download[1]))fail(404,'备份不存在');const file=join(backups.directory,download[1]);res.setHeader('Content-Type','application/vnd.sqlite3');res.setHeader('Content-Disposition',`attachment; filename="${download[1]}"`);res.setHeader('Content-Length',statSync(file).size);await pipeline(createReadStream(file),res);return;}
-        if(path==='/api/backups/restore'&&method==='POST'){await restoreBackup(req);fx.refresh().catch(()=>{});res.setHeader('Set-Cookie','lp_session=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0');return send(res,200,{ok:true,message:'备份已恢复，请重新登录'});}
+        if(path==='/api/backups/restore'&&method==='POST'){await restoreBackup(req);fx.refresh().catch(()=>{});res.setHeader('Set-Cookie','lp_session=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0');return send(res,200,{ok:true,message:'备份已恢复，请重新登录',redirect_admin:settings.admin_path});}
         if(path==='/api/nodes'&&method==='POST') {
           if(getNodes().length>=200) fail(400,'首版最多支持 200 台机器');
           const input=await body(req),id=randomUUID(),secret=token(),n=configuredNode(input,{},id);
@@ -372,14 +376,19 @@ export async function createApp(options = {}) {
           if(!match[2]&&method==='DELETE') {if(ssh.busy(node.id))fail(409,'部署中不能删除服务器');db.prepare('DELETE FROM nodes WHERE id=?').run(node.id);latest.delete(node.id);noticeState.delete(node.id);publicCache=null;return send(res,200,{ok:true});}
         }
         if(path==='/api/settings'&&method==='GET') return send(res,200,editableSettings());
-        if(path==='/api/settings'&&method==='PUT') {const input=await body(req),updated=settingsFields(input,settings);if(input.notification_targets!==undefined){const reportChanged=JSON.stringify(settings.notification_targets?.report??null)!==JSON.stringify(updated.notification_targets.report);for(const job of db.prepare("SELECT id,event_key FROM outbox WHERE status='pending'").all()){const [kind,id]=job.event_key.split(':'),type=({quota:'quota',offline:'offline',recovery:'offline',resource:'resource','resource-recovery':'resource',expiry:'expiry',expired:'expiry'})[kind];if((kind==='daily'&&reportChanged)||(type&&!notificationSelected(updated,type,id)))db.prepare("UPDATE outbox SET event_key=event_key||?,status='failed',error='通知服务器范围调整，已取消待发送通知' WHERE id=?").run(':scope-'+randomUUID(),job.id);}}db.prepare("INSERT INTO settings VALUES('config',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value").run(JSON.stringify(updated));settings=updated;publicCache=null;return send(res,200,editableSettings());}
+        if(path==='/api/settings'&&method==='PUT') {const input=await body(req),updated=settingsFields(input,settings);if(input.notification_targets!==undefined){const reportChanged=JSON.stringify(settings.notification_targets?.report??null)!==JSON.stringify(updated.notification_targets.report);for(const job of db.prepare("SELECT id,event_key FROM outbox WHERE status='pending'").all()){const [kind,id]=job.event_key.split(':'),type=({quota:'quota',offline:'offline',recovery:'offline',resource:'resource','resource-recovery':'resource',expiry:'expiry',expired:'expiry'})[kind];if((kind==='daily'&&reportChanged)||(type&&!notificationSelected(updated,type,id)))db.prepare("UPDATE outbox SET event_key=event_key||?,status='failed',error='通知服务器范围调整，已取消待发送通知' WHERE id=?").run(':scope-'+randomUUID(),job.id);}}db.prepare("INSERT INTO settings VALUES('config',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value").run(JSON.stringify(updated));const pathChanged=settings.admin_path!==updated.admin_path;settings=updated;publicCache=null;publicHistoryCache.clear();if(pathChanged){sessions.clear();res.setHeader('Set-Cookie','lp_session=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0');}return send(res,200,{...editableSettings(),redirect_admin:pathChanged?settings.admin_path:undefined});}
         if(path==='/api/notifications'&&method==='GET') return send(res,200,db.prepare('SELECT id,status,attempts,created,sent,error FROM outbox ORDER BY id DESC LIMIT 30').all());
         if(path==='/api/notifications/test'&&method==='POST') {if(!enqueue(`test:${randomUUID()}`,`✅ ${settings.brand_name} 通知测试成功`)) fail(400,'请先配置 Telegram Token 和 Chat ID');return send(res,200,{ok:true,message:'已加入发送队列，请稍后查看状态'});}
         fail(404,'接口不存在');
       }
       if(method==='GET') {
-        const file=path==='/'?'index.html':(path==='/public'||path==='/public/network'||/^\/public\/servers\/[a-f0-9-]{36}$/.test(path))?'public.html':path.slice(1);
-        if(publicFiles.has(file)) {res.setHeader('Content-Type',file.endsWith('.svg')?'image/svg+xml':file.endsWith('.js')?'text/javascript; charset=utf-8':file.endsWith('.css')?'text/css; charset=utf-8':'text/html; charset=utf-8');return res.end(publicFiles.get(file));}
+        const publicBase=settings.public_path==='/'?'':settings.public_path;
+        const publicDetail=path===publicBase+'/network'||new RegExp('^'+publicBase+'/servers/[a-f0-9-]{36}$').test(path);
+        if(path==='/'&&settings.public_path!=='/'||(path==='/public'&&settings.public_path!=='/public')){res.writeHead(302,{Location:settings.public_path});res.end();return;}
+        if(path===settings.admin_path+'/'){res.writeHead(302,{Location:settings.admin_path});res.end();return;}
+        const admin=path===settings.admin_path,file=admin?'index.html':path===settings.public_path||publicDetail?'public.html':path.slice(1);
+        if((file==='index.html'&&!admin)||file==='public.html'&&path!==settings.public_path&&!publicDetail)fail(404,'页面不存在');
+        if(publicFiles.has(file)){res.setHeader('Content-Type',file.endsWith('.svg')?'image/svg+xml':file.endsWith('.js')?'text/javascript; charset=utf-8':file.endsWith('.css')?'text/css; charset=utf-8':'text/html; charset=utf-8');if(file==='index.html'||file==='public.html'){const attr=admin?'data-admin-path="'+settings.admin_path+'"':'data-public-path="'+settings.public_path+'"';let html=publicFiles.get(file).toString().replace(/<body([^>]*)>/,'<body$1 '+attr+'>');if(admin)html=html.replace('<form id="login-form"','<form id="login-form" action="'+settings.admin_path+'/api/login"');return res.end(html);}return res.end(publicFiles.get(file));}
       }
       fail(404,'页面不存在');
     } catch(e) { if(!res.headersSent) send(res,e.status??500,{error:e.status?e.message:'服务器内部错误'});else res.end(); if(!e.status) console.error('Request failed:',options.debugErrors?e.stack:e.name); }
@@ -403,6 +412,6 @@ export async function createApp(options = {}) {
 function formatBytes(bytes) {const units=['B','KiB','MiB','GiB','TiB'];let i=0;while(bytes>=1024&&i<4){bytes/=1024;i++;}return bytes.toFixed(1)+' '+units[i];}
 if(process.argv[1] && import.meta.url===pathToFileURL(resolve(process.argv[1])).href) {
   const app=await createApp();
-  app.server.listen(Number(process.env.PORT ?? 8080),process.env.HOST ?? '127.0.0.1',()=>console.log(`Firefly Probe 0.2.0 listening on ${process.env.HOST ?? '127.0.0.1'}:${process.env.PORT ?? 8080}`));
+  app.server.listen(Number(process.env.PORT ?? 8080),process.env.HOST ?? '127.0.0.1',()=>console.log(`Firefly Probe 0.2.4 listening on ${process.env.HOST ?? '127.0.0.1'}:${process.env.PORT ?? 8080}`));
   let stopping=false;for(const sig of ['SIGINT','SIGTERM']) process.on(sig,async()=>{if(stopping)return;stopping=true;await app.close();process.exit(0);});
 }

@@ -27,7 +27,7 @@ test('真实 SSH 协议：指纹确认、密码验证、部署日志脱敏、权
   let a;
   try{
     assert.equal((await call('/api/nodes/00000000-0000-0000-0000-000000000000/ssh/probe','POST',{})).status,401);
-    const login=await call('/api/login','POST',{username:'admin',password:'ssh-admin-password-2026'});headers={...headers,Cookie:login.response.headers.get('set-cookie').split(';')[0],'X-CSRF-Token':login.body.csrf};
+    const login=await call('/admin/api/login','POST',{username:'admin',password:'ssh-admin-password-2026'});headers={...headers,Cookie:login.response.headers.get('set-cookie').split(';')[0],'X-CSRF-Token':login.body.csrf};
     a=(await call('/api/nodes','POST',{name:'SSH test',ssh_host:'127.0.0.1',ssh_port:sshServer.address().port,ssh_user:'root',ssh_password:password})).body;
     await t.test('配置与公开接口不回显密码或采集密钥，加密数据不会包含明文',async()=>{
       const saved=app.db.prepare('SELECT * FROM nodes WHERE id=?').get(a.id);assert.notEqual(saved.ssh_password,password);assert.notEqual(saved.agent_secret,a.token);assert.equal(createVault(dir).open(saved.ssh_password,a.id),password);

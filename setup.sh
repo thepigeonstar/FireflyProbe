@@ -27,7 +27,7 @@ echo '正在构建并启动主控。'
 if ! docker compose "${compose_args[@]}" up --build -d; then
   echo '部署失败，.env 已保存。排查后运行 README 中的启动命令；不要重新生成密码。' >&2; exit 1
 fi
-printf '\n管理地址：https://%s\n账号：admin\n初始密码：%s\n请保存密码，不要将 .env 发给他人。\n' "$domain" "$password"
+printf '\n管理地址：https://%s/admin\n账号：admin\n初始密码：%s\n请保存密码，不要将 .env 发给他人。\n' "$domain" "$password"
 if [[ "$mode" == 1 ]]; then
   echo '证书申请可能需要等待。检查：docker compose -f compose.yaml -f compose.https.yaml logs --tail=50'
 else

@@ -24,8 +24,8 @@ test('完整 API：认证、幂等流量、网卡锁定、通知、50 台上报�
   try{
     await t.test('拒绝未登录、错误密码、错误密钥和 CSRF',async()=>{
       assert.equal((await call('/api/nodes',{admin:false})).status,401);
-      assert.equal((await call('/api/login',{method:'POST',data:{username:'admin',password:'wrong'}})).status,401);
-      const login=await call('/api/login',{method:'POST',data:{username:'admin',password:options.password}});
+      assert.equal((await call('/admin/api/login',{method:'POST',data:{username:'admin',password:'wrong'}})).status,401);
+      const login=await call('/admin/api/login',{method:'POST',data:{username:'admin',password:options.password}});
       assert.equal(login.status,200);cookie=login.headers.get('set-cookie').split(';')[0];csrf=login.data.csrf;
       assert.equal((await call('/api/nodes',{method:'POST',csrfOverride:'wrong',data:{name:'no'}})).status,403);
       assert.equal((await call('/api/agent/config',{admin:false,secret:'a'.repeat(64)})).status,401);
@@ -106,7 +106,7 @@ test('完整 API：认证、幂等流量、网卡锁定、通知、50 台上报�
     await t.test('重启保存配置、流量和分钟趋势，原登录会话失效',async()=>{
       await app.close();app=await createApp(options);await new Promise(r=>app.server.listen(0,'127.0.0.1',r));base='http://127.0.0.1:'+app.server.address().port;
       assert.equal((await call('/api/nodes')).status,401);
-      const login=await call('/api/login',{method:'POST',data:{username:'admin',password:options.password}});cookie=login.headers.get('set-cookie').split(';')[0];csrf=login.data.csrf;
+      const login=await call('/admin/api/login',{method:'POST',data:{username:'admin',password:options.password}});cookie=login.headers.get('set-cookie').split(';')[0];csrf=login.data.csrf;
       const nodes=await call('/api/nodes');assert.equal(nodes.data.nodes.length,51);assert.equal(nodes.data.nodes.find(n=>n.id===id).traffic.measured,3000);
       const history=await call('/api/nodes/'+id+'/history');assert.ok(history.data.minutes.length>=1);assert.equal(history.data.minutes[0].rx,1024);
     });

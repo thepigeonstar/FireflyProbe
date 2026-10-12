@@ -1,4 +1,4 @@
-export const brandDefaults = { brand_name:'萤火', brand_english:'Firefly Probe', brand_logo:'', brand_favicon:'' };
+export const brandDefaults = { brand_name:'萤火', brand_english:'Firefly Probe', brand_logo:'', brand_favicon:'', login_subtitle:'服务器状态与流量，一个地方看清。' };
 export const brandView = settings => Object.fromEntries(Object.keys(brandDefaults).map(k=>[k,settings[k] ?? brandDefaults[k]]));
 
 export function validateBrand(input, old) {
@@ -8,6 +8,7 @@ export function validateBrand(input, old) {
     if(typeof input[key]!=='string' || input[key].trim().length>60 || /[\x00-\x1f\x7f]/.test(input[key])) throw new Error('品牌名称最多 60 个字符');
     result[key]=input[key].trim();
   }
+  if(input.login_subtitle!==undefined){if(typeof input.login_subtitle!=='string'||input.login_subtitle.length>240||/[\x00-\x1f\x7f]/.test(input.login_subtitle))throw new Error('登录文案最多 240 个字符');result.login_subtitle=input.login_subtitle.trim();}
   if(!result.brand_name) throw new Error('请填写显示名称');
   for(const key of ['brand_logo','brand_favicon']) {
     if(input[key]===undefined) continue;
