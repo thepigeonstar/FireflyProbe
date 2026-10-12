@@ -23,7 +23,7 @@ import (
 	"time"
 )
 
-const version = "0.1.0"
+const version = "0.2.0"
 
 type Config struct {
 	Server         string `json:"server"`
@@ -414,7 +414,7 @@ func main() {
 			if historyErr != nil {
 				report.HistoryError = historyErr.Error()
 			}
-			if cfg.HistoryStart != "" && len(days) == 0 {
+			if historyErr == nil && cfg.HistoryStart != "" && len(days) == 0 {
 				report.HistoryError = "waiting for first daily traffic sample in configured timezone"
 			}
 		}

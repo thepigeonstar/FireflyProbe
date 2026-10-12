@@ -10,6 +10,7 @@ ENV NODE_ENV=production HOST=0.0.0.0 PORT=8080 DATA_DIR=/app/data
 COPY package.json ./
 COPY server/ ./server/
 COPY web/ ./web/
+COPY tools/ ./tools/
 COPY agent/install.sh agent/bootstrap.sh ./agent/
 COPY --from=agent-build /bin/lightprobe-agent-linux-* ./bin/
 RUN cd /app/bin && sha256sum lightprobe-agent-linux-* > SHA256SUMS

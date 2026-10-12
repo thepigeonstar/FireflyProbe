@@ -3,14 +3,22 @@ set -euo pipefail
 umask 077
 server=''
 secret=''
+upgrade=false
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --server) server="${2:?缺少主控地址}"; shift 2 ;;
     --token) secret="${2:?缺少节点密钥}"; shift 2 ;;
+    --upgrade) upgrade=true; shift ;;
     *) echo '用法：bash bootstrap.sh --server https://主控域名 --token 节点密钥' >&2; exit 2 ;;
   esac
 done
 [[ $EUID -eq 0 ]] || { echo '请切换到 root 后执行安装命令。' >&2; exit 1; }
+if [[ "$upgrade" == true ]]; then
+  [[ -f /etc/lightprobe-agent.json ]] || { echo '未找到现有采集端配置，请先接入服务器。' >&2; exit 1; }
+  mapfile -t existing < <(python3 -c 'import json; c=json.load(open("/etc/lightprobe-agent.json")); print(c["server"]); print(c["token"])')
+  [[ ${#existing[@]} -eq 2 ]] || { echo '无法读取采集端配置。' >&2; exit 1; }
+  server=${existing[0]}; secret=${existing[1]}
+fi
 [[ "$server" =~ ^https://[a-zA-Z0-9.-]+(:[0-9]+)?/?$ && "$secret" =~ ^[a-f0-9]{64}$ ]] || { echo '需要有效的 HTTPS 主控地址和节点密钥。' >&2; exit 1; }
 server=${server%/}
 [[ -f /etc/os-release ]] || exit 1
@@ -34,5 +42,6 @@ printf '%s  %s\n' "$checksum" "$temporary/lightprobe-agent-linux-$arch" | sha256
 printf 'header = "Authorization: Bearer %s"\n' "$secret" > "$temporary/curl.conf"
 curl --config "$temporary/curl.conf" --proto '=https' --tlsv1.2 --fail --show-error --silent --connect-timeout 15 --max-time 30 "$server/api/agent/config" -o "$temporary/remote.json"
 printf '{"server":"%s","token":"%s","disk_path":"/"}\n' "$server" "$secret" > "$temporary/lightprobe-agent.json"
+if [[ "$upgrade" == true ]]; then cp /etc/lightprobe-agent.json "$temporary/lightprobe-agent.json"; fi
 unset secret
 bash "$temporary/install.sh" --config "$temporary/lightprobe-agent.json" --binary "$temporary/lightprobe-agent-linux-$arch"

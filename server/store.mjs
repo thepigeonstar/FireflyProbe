@@ -1,10 +1,18 @@
 import { DatabaseSync } from 'node:sqlite';
-import { mkdirSync } from 'node:fs';
-import { dirname } from 'node:path';
+import { mkdirSync, existsSync, chmodSync } from 'node:fs';
+import { dirname, join } from 'node:path';
 
 export function openStore(file) {
   mkdirSync(dirname(file), { recursive: true });
   const db = new DatabaseSync(file);
+  const schemaVersion = db.prepare('PRAGMA user_version').get().user_version;
+  if(schemaVersion>2) {db.close();throw new Error('数据库来自更高版本，请升级主控后再读取');}
+  // Preserve a consistent pre-migration snapshot when opening a v1 database.
+  if(schemaVersion===1) {
+    const backupDir=join(dirname(file),'backups');mkdirSync(backupDir,{recursive:true,mode:0o700});
+    const copy=join(backupDir,'migration-v1-'+Date.now()+'.sqlite');
+    if(!existsSync(copy)){db.prepare('VACUUM INTO ?').run(copy);chmodSync(copy,0o600);}
+  }
   db.exec(`PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL; PRAGMA foreign_keys=ON; PRAGMA busy_timeout=3000;
     CREATE TABLE IF NOT EXISTS nodes (
       id TEXT PRIMARY KEY, token_hash TEXT UNIQUE NOT NULL, name TEXT NOT NULL, group_name TEXT NOT NULL DEFAULT '',
@@ -28,7 +36,12 @@ export function openStore(file) {
       status TEXT NOT NULL DEFAULT 'pending', attempts INTEGER NOT NULL DEFAULT 0, next_try INTEGER NOT NULL DEFAULT 0,
       created INTEGER NOT NULL, sent INTEGER, error TEXT NOT NULL DEFAULT ''
     );
-    PRAGMA user_version=1;`);
+    `);
+  const columns=new Set(db.prepare('PRAGMA table_info(nodes)').all().map(x=>x.name));
+  for(const [name,type] of Object.entries({cost_amount:'REAL NOT NULL DEFAULT 0',cost_currency:"TEXT NOT NULL DEFAULT 'CNY'",cost_months:'INTEGER NOT NULL DEFAULT 1',cost_active:'INTEGER NOT NULL DEFAULT 1',alerts_enabled:'INTEGER NOT NULL DEFAULT 1',maintenance_until:'INTEGER NOT NULL DEFAULT 0',public_visible:'INTEGER NOT NULL DEFAULT 0',last_version:"TEXT NOT NULL DEFAULT ''"})) {
+    if(!columns.has(name))db.exec(`ALTER TABLE nodes ADD COLUMN ${name} ${type}`);
+  }
+  db.exec('CREATE TABLE IF NOT EXISTS alerts (node_id TEXT NOT NULL REFERENCES nodes(id) ON DELETE CASCADE, kind TEXT NOT NULL, since INTEGER NOT NULL, active INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(node_id,kind)); PRAGMA user_version=2;');
   return db;
 }
 
@@ -59,5 +72,10 @@ export function dailyTotals(db, node, today) {
   const total = predicate => rows.filter(predicate).reduce((t, r) => ({ rx: t.rx + r.rx, tx: t.tx + r.tx }), { rx: 0, tx: 0 });
   const cycle = total(r => r.date >= bounds.start && r.date < bounds.end);
   const measured = usedTraffic(cycle.rx, cycle.tx, node.billing_mode);
-  return { today: total(r => r.date === today), yesterday: total(r => r.date === yesterday), month: total(r => r.date.slice(0, 7) === today.slice(0, 7)), cycle, measured, ratio: node.quota > 0 ? measured / node.quota * 100 : null, bounds };
+  const recent=rows.filter(r=>r.date<today&&r.date>=bounds.start&&Date.parse(r.date)>=Date.parse(today)-7*864e5);
+  const sum=recent.reduce((s,r)=>({rx:s.rx+r.rx,tx:s.tx+r.tx}),{rx:0,tx:0});
+  const average=recent.length>=3?usedTraffic(sum.rx/recent.length,sum.tx/recent.length,node.billing_mode):null;
+  const remaining=node.quota>0?Math.max(0,node.quota-measured):null;
+  const forecast=node.quota>0&&average>0?new Date(Date.parse(today)+Math.ceil(remaining/average)*864e5).toISOString().slice(0,10):null;
+  return { today: total(r => r.date === today), yesterday: total(r => r.date === yesterday), month: total(r => r.date.slice(0, 7) === today.slice(0, 7)), cycle, measured, ratio: node.quota > 0 ? measured / node.quota * 100 : null, bounds, remaining, days_remaining:Math.max(0,Math.round((Date.parse(bounds.end)-Date.parse(today))/864e5)), forecast:forecast&&forecast<bounds.end?forecast:null, daily_average:average, forecast_samples:recent.length };
 }

@@ -62,6 +62,11 @@ tar -xzf "$temporary/source.tar.gz" --strip-components=1 -C "$temporary/source"
 for required in compose.yaml setup.sh update.sh Dockerfile package.json server/main.mjs server/store.mjs server/brand.mjs web/index.html web/app.js web/style.css web/firefly.svg agent/main.go agent/go.mod agent/install.sh agent/bootstrap.sh; do
   [[ -f "$temporary/source/$required" ]] || { echo "仓库缺少 $required，请上传完整项目的文件和文件夹。" >&2; exit 1; }
 done
+if grep -q "from './costs.mjs'" "$temporary/source/server/main.mjs"; then
+  for required in server/costs.mjs server/alarms.mjs server/backups.mjs web/features.js web/features.css web/public.html web/public.js; do
+    [[ -f "$temporary/source/$required" ]] || { echo "仓库缺少 $required，请上传完整新版项目。" >&2; exit 1; }
+  done
+fi
 if [[ "$update" == true ]]; then
   expected_project=$(basename "$target")
   container=$(cd "$target" && docker compose ps -aq lightprobe)
@@ -72,7 +77,7 @@ if [[ "$update" == true ]]; then
 fi
 mkdir -p -- "$target"
 # Copy a fixed list. Never copy .env, data, credentials, or change the Compose project name.
-for item in agent bin server web tools tests package.json Dockerfile compose.yaml compose.https.yaml Caddyfile setup.sh update.sh install-master.sh README.md verification.md GITHUB发布指南.md 开始部署.md .dockerignore; do
+for item in agent bin server web tools tests package.json Dockerfile compose.yaml compose.https.yaml Caddyfile setup.sh update.sh install-master.sh README.md verification.md 功能与费用说明.md UPDATE-v0.2.0.md GITHUB发布指南.md 开始部署.md .dockerignore; do
   [[ -e "$temporary/source/$item" ]] && cp -a -- "$temporary/source/$item" "$target/"
 done
 cd -- "$target"
