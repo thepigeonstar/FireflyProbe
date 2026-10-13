@@ -141,3 +141,7 @@ Node 35 项通过；包含真实本地 SSH2 协议、指纹确认、凭据加密
 ## v0.2.9
 
 51 项 Node 测试与浏览器检查通过。覆盖指南/文档入口、Token 导入鉴权与凭据保护、旧配置导入保留。Windows 授权助手实际下载、校验 SHA256 与运行版本检查通过，Google 交互登录未执行。
+
+## v0.2.10
+
+Browser verifies editable country codes/names/auto and settings plugin navigation. Password rotation test verifies old and new backups only decrypt with their creation-time password.

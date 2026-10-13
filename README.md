@@ -29,6 +29,6 @@ bash -o pipefail -c 'curl --proto "=https" --tlsv1.2 -fsS https://raw.githubuser
 - [Google Drive 授权与远程恢复](docs/Remote-Backup.md)
 - [示例插件包](examples/my-summary.ffplugin.json)
 - [插件开发](docs/wiki/Plugin-Development.md) · [GitHub Wiki](https://github.com/thepigeonstar/FireflyProbe/wiki)
-- [本次更新](UPDATE-v0.2.9.md) · [验证记录](verification.md)
+- [本次更新](UPDATE-v0.2.10.md) · [验证记录](verification.md)
 
 主控：Node.js 24、SQLite、Docker。采集端：Go、systemd、vnStat。
