@@ -183,3 +183,13 @@ setup.sh      主控初始化
 基础组件参考：[Node.js SQLite](https://nodejs.org/docs/latest-v24.x/api/sqlite.html)、[vnStat 官方手册](https://humdi.net/vnstat/man/vnstat.html)。
 
 本次调整见 [UPDATE-v0.2.6.md](../UPDATE-v0.2.6.md)。国家识别使用 [country.is](https://github.com/lineofflight/country)，国旗为随包提供的 flag-icons SVG。
+
+## 主控默认目录与卸载
+
+新安装默认 `/root/FireflyProbe`，已有 `/root/lightprobe` 安装继续在原目录更新，不需要移动目录或更换数据卷。固定安装命令仍然兼容安装与更新，更新前备份。
+
+```bash
+bash -o pipefail -c 'curl --proto "=https" --tlsv1.2 -fsS https://raw.githubusercontent.com/thepigeonstar/FireflyProbe/main/uninstall-master.sh | bash'
+```
+
+卸载保留安装目录、配置与数据卷。卸载前完整数据副本位于安装目录的 `uninstall-backups`，包含数据库、SSH 密钥及配置；请妥善保存。使用自定义安装目录时在管道末端加 `bash -s -- --dir /你的目录`。卸载主控不会卸载服务器采集端；采集端配置需在迁移后按实际主控域名调整。

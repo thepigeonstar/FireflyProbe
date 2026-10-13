@@ -3,17 +3,27 @@ set -euo pipefail
 umask 077
 repo='thepigeonstar/FireflyProbe'
 ref=''
-target='/root/lightprobe'
+target='/root/FireflyProbe'
+target_explicit=false
 update=auto
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --repo) repo="${2:?缺少 GitHub 用户名/仓库名}"; shift 2 ;;
     --ref) ref="${2:?缺少版本号}"; shift 2 ;;
-    --dir) target="${2:?缺少安装目录}"; shift 2 ;;
+    --dir) target="${2:?缺少安装目录}"; target_explicit=true; shift 2 ;;
     --update) update=true; shift ;;
-    *) echo '用法：bash install-master.sh [--repo 用户名/仓库名] [--ref 指定标签或main] [--dir /root/lightprobe] [--update]' >&2; exit 2 ;;
+    *) echo '用法：bash install-master.sh [--repo 用户名/仓库名] [--ref 指定标签或main] [--dir /root/FireflyProbe] [--update]' >&2; exit 2 ;;
   esac
 done
+select_install_target() {
+  local preferred=$1 legacy=$2 explicit=$3
+  if [[ "$explicit" == false && ! ( -f "$preferred/.env" && -f "$preferred/compose.yaml" ) && -f "$legacy/.env" && -f "$legacy/compose.yaml" ]]; then
+    printf '%s\n' "$legacy"
+  else
+    printf '%s\n' "$preferred"
+  fi
+}
+target=$(select_install_target "$target" /root/lightprobe "$target_explicit")
 [[ $EUID -eq 0 ]] || { echo '请以 root 运行。' >&2; exit 1; }
 [[ "$repo" =~ ^[a-zA-Z0-9_.-]+/[a-zA-Z0-9_.-]+$ ]] || { echo '仓库格式无效。' >&2; exit 1; }
 [[ -z "$ref" || "$ref" =~ ^[a-zA-Z0-9][a-zA-Z0-9_.-]*$ ]] || { echo '版本格式无效。' >&2; exit 1; }
@@ -179,7 +189,7 @@ fi
 ensure_docker
 mkdir -p -- "$target"
 # Copy a fixed list. Never copy .env, data, credentials, or change the Compose project name.
-for item in agent bin server web tools tests docs examples package.json package-lock.json Dockerfile compose.yaml compose.https.yaml Caddyfile setup.sh update.sh install-master.sh README.md verification.md 功能与费用说明.md UPDATE-v0.2.0.md UPDATE-v0.2.1.md UPDATE-v0.2.2.md UPDATE-v0.2.3.md UPDATE-v0.2.4.md UPDATE-v0.2.5.md UPDATE-v0.2.6.md UPDATE-v0.2.7.md UPDATE-v0.2.8.md UPDATE-v0.2.9.md UPDATE-v0.2.10.md GITHUB发布指南.md 开始部署.md .dockerignore; do
+for item in agent bin server web tools tests docs examples package.json package-lock.json Dockerfile compose.yaml compose.https.yaml Caddyfile setup.sh update.sh install-master.sh uninstall-master.sh README.md verification.md 功能与费用说明.md UPDATE-v0.2.0.md UPDATE-v0.2.1.md UPDATE-v0.2.2.md UPDATE-v0.2.3.md UPDATE-v0.2.4.md UPDATE-v0.2.5.md UPDATE-v0.2.6.md UPDATE-v0.2.7.md UPDATE-v0.2.8.md UPDATE-v0.2.9.md UPDATE-v0.2.10.md UPDATE-v0.2.11.md UPDATE-v0.2.12.md 固定安装命令.md GITHUB发布指南.md 开始部署.md .dockerignore; do
   [[ -e "$temporary/source/$item" ]] && cp -a -- "$temporary/source/$item" "$target/"
 done
 cd -- "$target"

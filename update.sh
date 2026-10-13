@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 cd -- "$(dirname -- "${BASH_SOURCE[0]}")"
-[[ -f compose.yaml && -f .env ]] || { echo '请先把更新包解压到原 lightprobe 目录，保留原 .env。' >&2; exit 1; }
+[[ -f compose.yaml && -f .env ]] || { echo '请先把更新包解压到原主控安装目录，保留原 .env。' >&2; exit 1; }
 expected_version=$(sed -n 's/.*data-build="\([^"]*\)".*/\1/p' web/index.html)
 [[ -n "$expected_version" && "$expected_version" != *$'\n'* ]] || { echo '无法读取新版本标记，请检查安装文件。' >&2; exit 1; }
 container=$(docker compose ps -q lightprobe)

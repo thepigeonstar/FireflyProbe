@@ -19,7 +19,7 @@ bash -o pipefail -c 'curl --proto "=https" --tlsv1.2 -fsS https://raw.githubuser
 
 支持 Debian 12/13、Ubuntu 22.04/24.04/26.04，amd64/arm64。已有 Docker 与 Compose 使用现有版本，缺少 Docker 从官方 stable 仓库安装最新稳定版；只有 Compose 缺少时校验并补装官方插件。
 
-同一命令自动区分安装/更新。默认目录 `/root/lightprobe`，更新前备份，保留已有配置与数据。新安装按提示配置域名和 HTTPS；已有 Nginx 时反向代理到本机 8080。
+同一命令自动区分安装/更新。默认目录 `/root/FireflyProbe`，旧 `/root/lightprobe` 安装自动在原目录更新；更新前备份，保留已有配置与数据。新安装按提示配置域名和 HTTPS；已有 Nginx 时反向代理到本机 8080。
 
 域名首页默认公开页，管理员默认入口 `/admin`。在服务器列表添加节点后，复制安装命令到节点执行；也可配置 SSH，由主控安装或更新。支持 Debian 12/13、Ubuntu 22.04+，amd64/arm64。
 
@@ -32,3 +32,9 @@ bash -o pipefail -c 'curl --proto "=https" --tlsv1.2 -fsS https://raw.githubuser
 - [本次更新](UPDATE-v0.2.10.md) · [验证记录](verification.md)
 
 主控：Node.js 24、SQLite、Docker。采集端：Go、systemd、vnStat。
+
+卸载主控（保留配置与数据）：
+
+```bash
+bash -o pipefail -c 'curl --proto "=https" --tlsv1.2 -fsS https://raw.githubusercontent.com/thepigeonstar/FireflyProbe/main/uninstall-master.sh | bash'
+```

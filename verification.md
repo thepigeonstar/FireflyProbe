@@ -149,3 +149,7 @@ Browser verifies editable country codes/names/auto and settings plugin navigatio
 ## v0.2.11
 
 55 Node tests and Chrome browser checks pass: daily/monthly aggregation, administrator-only history, retention validation, upload-before-prune, cleanup failures, and settings persistence. Remote cleanup uses mocked rclone; no real Google Drive files were deleted. Reporter uninstaller passes shell syntax and ShellCheck; not executed on a real VPS.
+
+## v0.2.12
+
+57 Node tests pass. Lifecycle fixtures verify new/legacy/default/explicit directories and uninstall stop/export/remove ordering. Backup-export failure prevents container removal. ShellCheck passes for install/uninstall scripts. Real VPS uninstall was not executed.

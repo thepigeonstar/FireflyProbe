@@ -29,7 +29,7 @@
 bash -o pipefail -c 'curl --proto "=https" --tlsv1.2 -fsS https://raw.githubusercontent.com/thepigeonstar/FireflyProbe/main/install-master.sh | bash'
 ```
 
-新机器安装，现有 /root/lightprobe 主控自动更新；命令不写版本号，之后不用改。
+新机器默认安装到 /root/FireflyProbe，已有 /root/FireflyProbe 或 /root/lightprobe 主控自动更新；命令不写版本号，之后不用改。
 安装时需要域名：80/443 空闲选择方式 1 自动 HTTPS；已有 Nginx 选择方式 2，并将 HTTPS 反向代理到本机 8080。
 
 ## 后续如何发布
