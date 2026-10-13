@@ -1,0 +1,4 @@
+import {readFileSync,writeFileSync} from 'node:fs';
+import {validatePluginPackage} from '../server/plugins.mjs';
+const values={};for(let i=2;i<process.argv.length;i+=2){const name=process.argv[i];if(!['--id','--name','--description','--version','--entry','--out'].includes(name)||!process.argv[i+1])throw Error('参数：--id ID --name 名称 --entry 文件.js --out 文件.ffplugin.json [--version 1.0.0] [--description 说明]');values[name.slice(2)]=process.argv[i+1];}
+if(!values.entry||!values.out)throw Error('请指定 --entry 和 --out');const value=validatePluginPackage({format:'firefly-plugin',api_version:1,manifest:{id:values.id,name:values.name,description:values.description||'',version:values.version||'1.0.0'},source:readFileSync(values.entry,'utf8')});const text=JSON.stringify(value,null,2);if(Buffer.byteLength(text)>192*1024)throw Error('插件包超过 192 KiB');writeFileSync(values.out,text+'\n');console.log('插件包已生成：'+values.out);

@@ -1,0 +1,11 @@
+{
+  "format": "firefly-plugin",
+  "api_version": 1,
+  "manifest": {
+    "id": "my-summary",
+    "name": "示例统计插件",
+    "description": "按分组统计服务器数量",
+    "version": "1.0.0"
+  },
+  "source": "export function mount({container,getNodes}){\n const title=document.createElement('h2');title.textContent='服务器分组统计';container.append(title);\n const groups=new Map();for(const node of getNodes()){const name=node.group_name||'未分组';groups.set(name,(groups.get(name)||0)+1);}\n for(const [name,count] of groups){const line=document.createElement('p');line.textContent=name+'：'+count+' 台';container.append(line);}\n if(!groups.size){const text=document.createElement('p');text.textContent='尚未添加服务器';container.append(text);}\n return ()=>container.replaceChildren();\n}\n"
+}

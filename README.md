@@ -6,16 +6,18 @@
 - 日/月/账单周期流量、额度与到期提醒、Telegram 通知。
 - 多币种服务器费用，统一计算人民币月均支出。
 - SSH 安装/更新采集端、拖拽排序、自动/手动国旗。
-- 公开只读页面、自定义名称/图标/标题/入口、备份与恢复。
-- 插件扩展入口，提供示例与开发文档。
+- 公开只读页面、自定义名称/图标/标题/入口、本地及 Google Drive 加密备份。
+- 插件上传、更新、卸载与开发文档。
 
 ## 安装与更新
 
-主控先准备 Docker、Docker Compose、curl 和 tar，以 root 执行：
+主控准备 curl、tar，以 root 执行；脚本检测 Docker/Compose，缺少时自动安装：
 
 ```bash
 bash -o pipefail -c 'curl --proto "=https" --tlsv1.2 -fsS https://raw.githubusercontent.com/thepigeonstar/FireflyProbe/main/install-master.sh | bash'
 ```
+
+支持 Debian 12/13、Ubuntu 22.04/24.04/26.04，amd64/arm64。已有 Docker 与 Compose 使用现有版本，缺少 Docker 从官方 stable 仓库安装最新稳定版；只有 Compose 缺少时校验并补装官方插件。
 
 同一命令自动区分安装/更新。默认目录 `/root/lightprobe`，更新前备份，保留已有配置与数据。新安装按提示配置域名和 HTTPS；已有 Nginx 时反向代理到本机 8080。
 
@@ -24,7 +26,9 @@ bash -o pipefail -c 'curl --proto "=https" --tlsv1.2 -fsS https://raw.githubuser
 ## 文档
 
 - [部署、恢复与排查](docs/Deployment.md)
+- [Google Drive 授权与远程恢复](docs/Remote-Backup.md)
+- [示例插件包](examples/my-summary.ffplugin.json)
 - [插件开发](docs/wiki/Plugin-Development.md) · [GitHub Wiki](https://github.com/thepigeonstar/FireflyProbe/wiki)
-- [本次更新](UPDATE-v0.2.7.md) · [验证记录](verification.md)
+- [本次更新](UPDATE-v0.2.8.md) · [验证记录](verification.md)
 
 主控：Node.js 24、SQLite、Docker。采集端：Go、systemd、vnStat。

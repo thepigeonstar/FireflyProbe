@@ -18,8 +18,8 @@ done
 [[ "$repo" =~ ^[a-zA-Z0-9_.-]+/[a-zA-Z0-9_.-]+$ ]] || { echo '仓库格式无效。' >&2; exit 1; }
 [[ -z "$ref" || "$ref" =~ ^[a-zA-Z0-9][a-zA-Z0-9_.-]*$ ]] || { echo '版本格式无效。' >&2; exit 1; }
 [[ "$target" == /* && "$target" != / ]] || { echo '请指定独立的绝对安装目录。' >&2; exit 1; }
-for program in curl tar docker; do command -v "$program" >/dev/null || { echo "请先安装 $program（Docker 还需要 Compose 插件）。" >&2; exit 1; }; done
-docker compose version >/dev/null
+for program in curl tar; do command -v "$program" >/dev/null || { echo "请先安装 $program。" >&2; exit 1; }; done
+
 if [[ "$update" == auto ]]; then
   if [[ -f "$target/.env" && -f "$target/compose.yaml" ]]; then
     update=true
@@ -36,6 +36,67 @@ elif [[ -d "$target" ]] && [[ -n "$(ls -A -- "$target")" ]]; then
 fi
 temporary=$(mktemp -d)
 trap 'rm -rf -- "$temporary"' EXIT
+ensure_docker() {
+  if command -v docker >/dev/null && docker compose version >/dev/null 2>&1; then
+    echo '检测到 Docker 和 Compose，将使用现有版本。'
+    return
+  fi
+  [[ -f /etc/os-release ]] || { echo '无法识别系统，请先手动安装 Docker。' >&2; exit 1; }
+  # shellcheck disable=SC1091
+  . /etc/os-release
+  case "$ID:${VERSION_ID:-}" in
+    debian:12|debian:13|ubuntu:22.04|ubuntu:24.04|ubuntu:26.04) ;;
+    *) echo '自动安装 Docker 支持 Debian 12/13、Ubuntu 22.04/24.04/26.04；其他系统请手动安装。' >&2; exit 1 ;;
+  esac
+  [[ "${VERSION_CODENAME:-}" =~ ^[a-z]+$ ]] || { echo '系统代号无效。' >&2; exit 1; }
+  local architecture repository_file key_file
+  architecture=$(dpkg --print-architecture)
+  [[ "$architecture" == amd64 || "$architecture" == arm64 ]] || { echo '自动部署支持 amd64/arm64。' >&2; exit 1; }
+  if command -v docker >/dev/null; then
+    local compose_arch compose_file expected_checksum
+    compose_arch=x86_64
+    [[ "$architecture" != arm64 ]] || compose_arch=aarch64
+    compose_file="docker-compose-linux-$compose_arch"
+    echo 'Docker 已存在，仅安装缺少的 Compose 插件，不更新 Docker Engine。'
+    curl --proto '=https' --proto-redir '=https' --tlsv1.2 -fsSL --connect-timeout 15 --max-time 180 "https://github.com/docker/compose/releases/latest/download/$compose_file" -o "$temporary/$compose_file"
+    curl --proto '=https' --proto-redir '=https' --tlsv1.2 -fsSL --connect-timeout 15 --max-time 60 "https://github.com/docker/compose/releases/latest/download/$compose_file.sha256" -o "$temporary/compose.sha256"
+    expected_checksum=$(head -c 64 "$temporary/compose.sha256")
+    [[ "$expected_checksum" =~ ^[a-fA-F0-9]{64}$ ]] || { echo 'Compose 校验文件无效。' >&2; exit 1; }
+    printf '%s  %s\n' "$expected_checksum" "$temporary/$compose_file" | sha256sum -c -
+    install -D -m 0755 "$temporary/$compose_file" /usr/local/lib/docker/cli-plugins/docker-compose
+    docker compose version
+    return
+  fi
+  if ! command -v docker >/dev/null; then
+    # Never remove a pre-existing container runtime to force installation.
+    for package in docker.io docker-ce docker-ce-cli containerd runc podman-docker; do
+      if dpkg-query -W -f='${Status}' "$package" 2>/dev/null | grep -q 'install ok installed'; then
+        echo "检测到已有 $package，请先修复现有 Docker 安装，脚本不会卸载运行环境。" >&2; exit 1
+      fi
+    done
+  fi
+  apt-get update
+  apt-get install -y ca-certificates curl
+  key_file="$temporary/docker.asc"
+  repository_file="$temporary/docker.sources"
+  curl --proto '=https' --tlsv1.2 -fsSL --connect-timeout 15 --max-time 90 "https://download.docker.com/linux/$ID/gpg" -o "$key_file"
+  install -m 0755 -d /etc/apt/keyrings
+  install -m 0644 "$key_file" /etc/apt/keyrings/firefly-docker.asc
+  printf 'Types: deb\nURIs: https://download.docker.com/linux/%s\nSuites: %s\nComponents: stable\nArchitectures: %s\nSigned-By: /etc/apt/keyrings/firefly-docker.asc\n' "$ID" "$VERSION_CODENAME" "$architecture" > "$repository_file"
+  install -m 0644 "$repository_file" /etc/apt/sources.list.d/firefly-docker.sources
+  apt-get update
+  if command -v docker >/dev/null; then
+    echo 'Docker 已存在，仅补装 Compose 插件。'
+    apt-get install -y --no-upgrade docker-compose-plugin
+  else
+    echo '正在从 Docker 官方 stable 仓库安装最新稳定版。'
+    apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+    systemctl enable --now docker
+  fi
+  docker --version
+  docker compose version
+}
+
 kind=tags
 if [[ -z "$ref" ]]; then
   # GitHub redirects this URL to the latest published, non-prerelease release.
@@ -94,6 +155,11 @@ if grep -q "from './plugins.mjs'" "$temporary/source/server/main.mjs"; then
     [[ -f "$temporary/source/$required" ]] || { echo "仓库缺少 $required，请上传完整项目。" >&2; exit 1; }
   done
 fi
+if grep -q "from './remote-backup.mjs'" "$temporary/source/server/main.mjs"; then
+  for required in server/remote-backup.mjs server/backup-archive.mjs web/remote-backup.js; do
+    [[ -f "$temporary/source/$required" ]] || { echo "仓库缺少 $required，请上传完整项目。" >&2; exit 1; }
+  done
+fi
 if [[ "$update" == true ]]; then
   expected_project=$(basename "$target")
   container=$(cd "$target" && docker compose ps -aq lightprobe)
@@ -102,9 +168,10 @@ if [[ "$update" == true ]]; then
     [[ "$active_project" == "$expected_project" ]] || { echo '检测到自定义 Compose 项目名，请按 README 手动更新，保留原项目名。' >&2; exit 1; }
   fi
 fi
+ensure_docker
 mkdir -p -- "$target"
 # Copy a fixed list. Never copy .env, data, credentials, or change the Compose project name.
-for item in agent bin server web tools tests docs package.json package-lock.json Dockerfile compose.yaml compose.https.yaml Caddyfile setup.sh update.sh install-master.sh README.md verification.md 功能与费用说明.md UPDATE-v0.2.0.md UPDATE-v0.2.1.md UPDATE-v0.2.2.md UPDATE-v0.2.3.md UPDATE-v0.2.4.md UPDATE-v0.2.5.md UPDATE-v0.2.6.md UPDATE-v0.2.7.md GITHUB发布指南.md 开始部署.md .dockerignore; do
+for item in agent bin server web tools tests docs examples package.json package-lock.json Dockerfile compose.yaml compose.https.yaml Caddyfile setup.sh update.sh install-master.sh README.md verification.md 功能与费用说明.md UPDATE-v0.2.0.md UPDATE-v0.2.1.md UPDATE-v0.2.2.md UPDATE-v0.2.3.md UPDATE-v0.2.4.md UPDATE-v0.2.5.md UPDATE-v0.2.6.md UPDATE-v0.2.7.md UPDATE-v0.2.8.md GITHUB发布指南.md 开始部署.md .dockerignore; do
   [[ -e "$temporary/source/$item" ]] && cp -a -- "$temporary/source/$item" "$target/"
 done
 cd -- "$target"

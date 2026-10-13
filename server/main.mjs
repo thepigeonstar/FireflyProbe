@@ -10,10 +10,11 @@ import { brandDefaults, brandView, validateBrand } from './brand.mjs';
 import { createRates, nodeCost, costSummary } from './costs.mjs';
 import { alarmDefaults, inQuiet, processAlarms } from './alarms.mjs';
 import { createBackups, backupName, receiveRestore } from './backups.mjs';
-import { createVault, createSSH, sshFields } from './ssh.mjs';
+import { createVault, vaultFromKey, createSSH, sshFields } from './ssh.mjs';
 import {notificationSelected,validateTargets} from './notification-targets.mjs';
 import {networkChart} from './network-chart.mjs';
-import {loadPlugins} from './plugins.mjs';
+import {createPlugins,validatePluginPackage} from './plugins.mjs';
+import {createRemoteBackup,parseDriveConfig,remoteFields} from './remote-backup.mjs';
 import {createAccount,validatePaths} from './account.mjs';
 
 export function publicIP(value){const ip=String(value||'').replace(/^::ffff:/,'');if(!isIP(ip))return '';if(isIP(ip)===4){const [a,b]=ip.split('.').map(Number);if(a===0||a===10||a===127||a>=224||a===169&&b===254||a===172&&b>=16&&b<=31||a===192&&b===168||a===100&&b>=64&&b<=127||a===198&&(b===18||b===19))return '';}else if(!/^[23][0-9a-f]{3}:/i.test(ip))return '';return ip;}
@@ -22,7 +23,7 @@ const sha = s => createHash('sha256').update(s).digest('hex');
 const token = () => randomBytes(32).toString('hex');
 const defaults = { timezone: 'Asia/Shanghai', interval: 5, offline_seconds: 45, keep_days: 180, trend_days: 7, report_enabled: false, report_hour: 8, report_minute: 0, thresholds: [80, 90, 95], telegram_token: '', telegram_chat: '' };
 const staticDir = fileURLToPath(new URL('../web/', import.meta.url));
-const publicFiles = new Map(['index.html', 'app.js', 'features.js','style.css','features.css','management.js','management.css','background.js','background.css','theme.js','theme.css', 'firefly.svg','public.html','public.js','plugin-host.js'].map(f => [f, readFileSync(join(staticDir, f))]));
+const publicFiles = new Map(['index.html', 'app.js', 'features.js','style.css','features.css','management.js','management.css','background.js','background.css','theme.js','theme.css', 'firefly.svg','public.html','public.js','plugin-host.js','remote-backup.js'].map(f => [f, readFileSync(join(staticDir, f))]));
 const downloads = new Map([
   ['/install-agent.sh', fileURLToPath(new URL('../agent/bootstrap.sh', import.meta.url))],
   ['/downloads/install.sh', fileURLToPath(new URL('../agent/install.sh', import.meta.url))],
@@ -93,7 +94,7 @@ export async function createApp(options = {}) {
   if (secure && !publicURL.startsWith('https://')) throw new Error('安全 Cookie 模式需要 HTTPS PUBLIC_URL');
   let appOrigin = publicURL ? new URL(publicURL).origin : '';
   const vault=createVault(dirname(dbPath));
-  const plugins=loadPlugins(options.pluginDirectory??join(staticDir,'plugins'));
+  const plugins=createPlugins(options.pluginDirectory??join(staticDir,'plugins'),db);
   const ssh=createSSH({db,vault,publicURL,bootstrap:readFileSync(fileURLToPath(new URL('../agent/bootstrap.sh',import.meta.url)),'utf8'),ClientClass:options.sshClient});
   function configuredNode(input,old={},id=old.id) {
     const fields={...nodeFields({...old,...input}),...sshFields(input,old)};
@@ -103,6 +104,7 @@ export async function createApp(options = {}) {
     if(fields.ssh_host!==(old.ssh_host??'')||fields.ssh_port!==(old.ssh_port??22))fields.ssh_fingerprint='';
     return fields;
   }
+  const remoteBackup=createRemoteBackup({db,dataDir:dirname(dbPath),vault,backups,runRclone:options.runRclone,blocked:()=>restoring||backups.busy||getNodes().some(n=>ssh.busy(n.id)),beforeSnapshot:()=>{for(const [id,l] of latest){flushMinute(id,l);db.prepare('UPDATE nodes SET last_seen=?,last_version=? WHERE id=?').run(l.received,l.metrics.version,id);}}});
   const now = () => Math.floor(Date.now()/1000);
   const geoPending=new Map(),geoAttempts=new Map();let geoActive=0;
   function countryQueue(id,ip){if(!ip||closed||options.disableExternal)return;const n=db.prepare('SELECT country_ip,country_code,country_override FROM nodes WHERE id=?').get(id);if(!n||n.country_override||n.country_ip===ip&&n.country_code)return;const prior=geoAttempts.get(id);if(prior&&prior.ip===ip&&Date.now()-prior.time<3600000)return;geoAttempts.set(id,{ip,time:Date.now()});geoPending.set(id,ip);countryDrain();}
@@ -256,18 +258,23 @@ export async function createApp(options = {}) {
   }
   const writeNode=(id,n)=>{publicCache=null;return db.prepare(`UPDATE nodes SET ${Object.keys(n).map(k=>k+'=?').join(',')} WHERE id=?`).run(...Object.values(n),id);};
   async function restoreBackup(req) {
-    if(backups.busy||restoring||getNodes().some(n=>ssh.busy(n.id)))fail(409,'已有备份、恢复或 SSH 部署正在进行');
+    if(backups.busy||remoteBackup.busy||restoring||getNodes().some(n=>ssh.busy(n.id)))fail(409,'已有备份、恢复或 SSH 部署正在进行');
     const epoch=restoreEpoch,incoming=dbPath+'.incoming-'+randomUUID();let ownsLock=false;
     try {
-      await receiveRestore(req,incoming);
+      const passwordHeader=String(req.headers['x-backup-password']||'');if(passwordHeader.length>2048||passwordHeader&&!/^[A-Za-z0-9+/]*={0,2}$/.test(passwordHeader))fail(400,'备份密码编码无效');
+      const archive=await receiveRestore(req,incoming,Buffer.from(passwordHeader,'base64').toString('utf8'));
       // Validate and migrate the candidate before touching the running database.
       const candidate=openStore(incoming);
       try {
         const saved=JSON.parse(candidate.prepare("SELECT value FROM settings WHERE key='config'").get()?.value??'{}');
         settingsFields({...initial,...saved},{...initial,...saved});
         const nodes=candidate.prepare('SELECT * FROM nodes').all();if(nodes.length>200)fail(400,'备份节点超过 200 台');for(const n of nodes){nodeFields(n);sshFields(n);if(typeof n.ssh_fingerprint!=="string"||n.ssh_fingerprint&& !/^SHA256:[A-Za-z0-9+/]{43}$/.test(n.ssh_fingerprint))fail(400,"备份 SSH 指纹无效");}
+        const pluginRows=candidate.prepare("SELECT key,value FROM settings WHERE key LIKE 'plugin:%'").all();if(pluginRows.length>30)fail(400,'备份插件超过 30 个');for(const row of pluginRows){const pack=validatePluginPackage(JSON.parse(row.value));if(row.key!=='plugin:'+pack.manifest.id)fail(400,'备份插件 ID 不一致');}
+        if(archive){const sourceVault=vaultFromKey(Buffer.from(archive.ssh_key,'base64'));for(const node of nodes)for(const field of ['ssh_password','agent_secret'])if(node[field])candidate.prepare('UPDATE nodes SET '+field+'=? WHERE id=?').run(vault.seal(sourceVault.open(node[field],node.id),node.id),node.id);
+          const cloud=candidate.prepare("SELECT value FROM settings WHERE key='rclone_config'").get();if(cloud){const text=sourceVault.open(cloud.value,'rclone-config');parseDriveConfig(text);candidate.prepare("UPDATE settings SET value=? WHERE key='rclone_config'").run(vault.seal(text,'rclone-config'));}
+          const remote=candidate.prepare("SELECT value FROM settings WHERE key='remote_backup'").get();if(remote){const c=remoteFields({},JSON.parse(remote.value));if(c.pass_cipher)c.pass_cipher=vault.seal(sourceVault.open(c.pass_cipher,'remote-backup'),'remote-backup');candidate.prepare("UPDATE settings SET value=? WHERE key='remote_backup'").run(JSON.stringify(c));}}
       }finally{candidate.close();}
-      if(restoring||backups.busy||epoch!==restoreEpoch||getNodes().some(n=>ssh.busy(n.id)))fail(409,'已有恢复或部署操作，请稍后重试');
+      if(restoring||backups.busy||remoteBackup.busy||epoch!==restoreEpoch||getNodes().some(n=>ssh.busy(n.id)))fail(409,'已有恢复或部署操作，请稍后重试');
       restoring=true;
       ownsLock=true;
       while(workerBusy||fx.busy)await new Promise(r=>setTimeout(r,20));
@@ -347,6 +354,12 @@ export async function createApp(options = {}) {
         const session=auth(req,method!=='GET');
         if(path==='/api/ssh/draft/probe'&&method==='POST')return send(res,200,await ssh.draftProbe(await body(req),session.cookie));
         if(path==='/api/ssh/draft/test'&&method==='POST')return send(res,200,await ssh.draftTest(await body(req),session.cookie));
+        if(path==='/api/plugins/upload'&&method==='POST'){const input=await body(req);return send(res,201,plugins.install(input.package,input.replace===true));}
+        const removePlugin=/^\/api\/plugins\/([a-z][a-z0-9-]{0,39})$/.exec(path);if(removePlugin&&method==='DELETE'){plugins.remove(removePlugin[1]);return send(res,200,{ok:true});}
+        if(path==='/api/remote-backup'&&method==='GET')return send(res,200,remoteBackup.view());
+        if(path==='/api/remote-backup'&&method==='PUT')return send(res,200,remoteBackup.save(await body(req)));
+        if(path==='/api/remote-backup/config'&&method==='POST')return send(res,200,remoteBackup.importConfig((await body(req)).config));
+        if(path==='/api/remote-backup/run'&&method==='POST')return send(res,202,remoteBackup.start());
         if(path==='/api/plugins'&&method==='GET')return send(res,200,plugins.list());
         const pluginRoute=/^\/api\/plugins\/([a-z][a-z0-9-]{0,39})\/module$/.exec(path);if(pluginRoute&&method==='GET'){const source=plugins.source(pluginRoute[1]);if(source===undefined)fail(404,'插件不存在');res.writeHead(200,{'Content-Type':'text/javascript; charset=utf-8','Cache-Control':'no-store'});return res.end(source);}
         if(path==='/api/account'&&method==='POST'){const result=await account.change(await body(req));sessions.clear();res.setHeader('Set-Cookie','lp_session=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0');return send(res,200,{...result,redirect_admin:settings.admin_path,message:'账号已更新，请重新登录'});}
@@ -355,7 +368,7 @@ export async function createApp(options = {}) {
         const sshRoute=/^\/api\/nodes\/([a-f0-9-]{36})\/ssh\/(probe|trust|test|deploy)$/.exec(path);
         if(sshRoute&&method==='POST'){const [unused,id,action]=sshRoute;if(action==='probe')return send(res,200,await ssh.probe(id));if(action==='trust'){const input=await body(req);ssh.trust(id,input.fingerprint);return send(res,200,{ok:true});}if(action==='test')return send(res,200,await ssh.test(id));return send(res,202,ssh.deploy(id));}
         const jobRoute=/^\/api\/ssh\/jobs\/([a-f0-9-]{36})$/.exec(path);if(jobRoute&&method==='GET')return send(res,200,ssh.status(jobRoute[1]));
-        if(path==='/api/nodes'&&method==='GET') {const rates=fx.read();const {rates:unused,...fxInfo}=rates;return send(res,200,{nodes:snapshot(),settings:safeSettings(),cost_summary:costSummary(getNodes(),rates),fx_info:fxInfo,server_time:now(),version:'0.2.7',agent_version:'0.2.0'});}
+        if(path==='/api/nodes'&&method==='GET') {const rates=fx.read();const {rates:unused,...fxInfo}=rates;return send(res,200,{nodes:snapshot(),settings:safeSettings(),cost_summary:costSummary(getNodes(),rates),fx_info:fxInfo,server_time:now(),version:'0.2.8',agent_version:'0.2.0'});}
         const adminNetwork=/^\/api\/nodes\/([a-f0-9-]{36})\/network-history$/.exec(path);if(adminNetwork&&method==='GET')return send(res,200,publicHistory(adminNetwork[1],true));
         if(path==='/api/network/history'&&method==='GET')return send(res,200,publicHistory('network',true));
         if(path==='/api/costs'&&method==='GET')return send(res,200,{...costSummary(getNodes(),fx.read()),fx:fx.read()});
@@ -412,6 +425,7 @@ export async function createApp(options = {}) {
   server.requestTimeout=120000; server.headersTimeout=10000; server.maxConnections=256;
   const tick=setInterval(()=>notifications().catch(e=>console.error('Notification worker:',e.name)),5000);tick.unref();
   const flush=setInterval(()=>{if(!restoring)for(const [id,live] of latest) flushMinute(id,live);},60000);flush.unref();
+  const remoteTick=setInterval(()=>{if(!closed&&!restoring)remoteBackup.tick().catch(()=>{});},60000);remoteTick.unref();
   const extrasTick=setInterval(async()=>{if(closed||restoring)return;await fx.refresh();if(closed||restoring)return;const today=dayKey(new Date(),settings.timezone);if(settings.backup_enabled&&!backups.busy&&db.prepare("SELECT value FROM settings WHERE key='last_backup'").get()?.value!==today){try{await backups.create('daily');db.prepare("INSERT INTO settings VALUES('last_backup',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value").run(today);}catch(e){console.error('Backup:',e.name);}}},3600000);extrasTick.unref();
   if(!options.disableExternal&&!options.disableTelegram)fx.refresh().catch(()=>{});
   const maintenance=setInterval(()=>{
@@ -423,11 +437,11 @@ export async function createApp(options = {}) {
     db.prepare('DELETE FROM daily WHERE date<?').run(dayKey(new Date((stamp-settings.keep_days*86400)*1000),settings.timezone));
     db.prepare("DELETE FROM outbox WHERE status='sent' AND created<?").run(stamp-90*86400);
   },3600000);maintenance.unref();
-  return {server,get db(){return db;},snapshot,notifications,close:async()=>{closed=true;ssh.cancelAll();clearInterval(tick);clearInterval(flush);clearInterval(maintenance);clearInterval(extrasTick);if(db.isOpen)for(const [id,l] of latest){db.prepare('UPDATE nodes SET last_seen=? WHERE id=?').run(l.received,id);flushMinute(id,l);}await new Promise(r=>server.close(r));while(workerBusy||fx.busy||backups.busy)await new Promise(r=>setTimeout(r,50));if(db.isOpen)db.close();}};
+  return {server,remoteBackup,get db(){return db;},snapshot,notifications,close:async()=>{closed=true;ssh.cancelAll();clearInterval(tick);clearInterval(flush);clearInterval(maintenance);clearInterval(extrasTick);clearInterval(remoteTick);await remoteBackup.close();if(db.isOpen)for(const [id,l] of latest){db.prepare('UPDATE nodes SET last_seen=? WHERE id=?').run(l.received,id);flushMinute(id,l);}await new Promise(r=>server.close(r));while(workerBusy||fx.busy||backups.busy)await new Promise(r=>setTimeout(r,50));if(db.isOpen)db.close();}};
 }
 function formatBytes(bytes) {const units=['B','KiB','MiB','GiB','TiB'];let i=0;while(bytes>=1024&&i<4){bytes/=1024;i++;}return bytes.toFixed(1)+' '+units[i];}
 if(process.argv[1] && import.meta.url===pathToFileURL(resolve(process.argv[1])).href) {
   const app=await createApp();
-  app.server.listen(Number(process.env.PORT ?? 8080),process.env.HOST ?? '127.0.0.1',()=>console.log(`Firefly Probe 0.2.7 listening on ${process.env.HOST ?? '127.0.0.1'}:${process.env.PORT ?? 8080}`));
+  app.server.listen(Number(process.env.PORT ?? 8080),process.env.HOST ?? '127.0.0.1',()=>console.log(`Firefly Probe 0.2.8 listening on ${process.env.HOST ?? '127.0.0.1'}:${process.env.PORT ?? 8080}`));
   let stopping=false;for(const sig of ['SIGINT','SIGTERM']) process.on(sig,async()=>{if(stopping)return;stopping=true;await app.close();process.exit(0);});
 }

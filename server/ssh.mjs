@@ -12,6 +12,10 @@ export function createVault(directory) {
   try {writeFileSync(file,randomBytes(32),{flag:'wx',mode:0o600});}catch(e){if(e.code!=='EEXIST')throw e;}
   chmodSync(file,0o600);
   const key=readFileSync(file);if(key.length!==32)throw new Error('SSH 加密密钥文件无效');
+  return vaultFromKey(key);
+}
+export function vaultFromKey(key){
+  if(!Buffer.isBuffer(key)||key.length!==32)throw new Error('凭据密钥无效');
   return {
     seal(value,id){const iv=randomBytes(12),cipher=createCipheriv('aes-256-gcm',key,iv);cipher.setAAD(Buffer.from(id));const body=Buffer.concat([cipher.update(value,'utf8'),cipher.final()]);return Buffer.concat([iv,cipher.getAuthTag(),body]).toString('base64');},
     open(value,id){try{const blob=Buffer.from(value,'base64'),cipher=createDecipheriv('aes-256-gcm',key,blob.subarray(0,12));cipher.setAAD(Buffer.from(id));cipher.setAuthTag(blob.subarray(12,28));return Buffer.concat([cipher.update(blob.subarray(28)),cipher.final()]).toString('utf8');}catch{throw error(409,'SSH 凭据无法解密，请重新填写密码；迁移主控时需同时迁移 ssh-secret.key');}}

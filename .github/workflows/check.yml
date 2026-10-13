@@ -20,4 +20,5 @@ jobs:
       - run: bash -n setup.sh update.sh install-master.sh agent/install.sh agent/bootstrap.sh
       - run: shellcheck -S warning setup.sh update.sh install-master.sh agent/install.sh agent/bootstrap.sh
       - run: sudo bash tests/install-master.test.sh
+      - run: bash tests/docker-bootstrap.test.sh
       - run: docker build -t lightprobe-check .

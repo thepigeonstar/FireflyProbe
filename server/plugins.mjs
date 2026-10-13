@@ -1,5 +1,23 @@
 import {existsSync,readFileSync,realpathSync} from 'node:fs';
 import {join,relative,isAbsolute} from 'node:path';
+import {createHash} from 'node:crypto';
+
+const invalid=message=>Object.assign(new Error(message),{status:400});
+export function validatePluginPackage(value){
+ const m=value?.manifest;
+ if(value?.format!=='firefly-plugin'||value.api_version!==1||!m||!/^[a-z][a-z0-9-]{0,39}$/.test(m.id||'')||typeof m.name!=='string'||!m.name.trim()||m.name.length>60||typeof m.description!=='string'||m.description.length>240||typeof m.version!=='string'||m.version.length>32||typeof value.source!=='string'||!value.source.trim()||Buffer.byteLength(value.source)>128*1024)throw invalid('插件包无效：需为 Firefly 插件接口 1，代码不超过 128 KiB');
+ return {format:'firefly-plugin',api_version:1,manifest:{id:m.id,name:m.name.trim(),description:m.description,version:m.version},source:value.source};
+}
+export function createPlugins(directory,db){
+ const builtin=loadPlugins(directory),uploads=()=>db.prepare("SELECT key,value FROM settings WHERE key LIKE 'plugin:%'").all().map(row=>validatePluginPackage(JSON.parse(row.value)));
+ const metadata=p=>({...p.manifest,uploaded:true,revision:createHash('sha256').update(p.source).digest('hex')});
+ return {
+  list:()=>[...builtin.list(),...uploads().map(metadata)],
+  source:id=>uploads().find(p=>p.manifest.id===id)?.source??builtin.source(id),
+  install(input,replace=false){const p=validatePluginPackage(input),key='plugin:'+p.manifest.id;if(builtin.list().some(x=>x.id===p.manifest.id))throw Object.assign(new Error('与内置插件 ID 冲突，请更换 ID'),{status:409});const existing=db.prepare('SELECT 1 FROM settings WHERE key=?').get(key);if(existing&&!replace)throw Object.assign(new Error('同名插件已存在，确认后可覆盖更新'),{status:409});if(!existing&&this.list().length>=30)throw invalid('最多安装 30 个插件');db.prepare('INSERT INTO settings VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value').run(key,JSON.stringify(p));return metadata(p);},
+  remove(id){if(!/^[a-z][a-z0-9-]{0,39}$/.test(id))throw invalid('插件 ID 无效');const result=db.prepare('DELETE FROM settings WHERE key=?').run('plugin:'+id);if(!result.changes)throw Object.assign(new Error('未找到可删除的上传插件'),{status:404});}
+ };
+}
 
 // Registry and modules are trusted application source installed by the operator.
 export function loadPlugins(directory){
