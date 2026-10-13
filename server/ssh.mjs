@@ -3,6 +3,7 @@ const { Client }=ssh2;
 import { createCipheriv, createDecipheriv, randomBytes, createHash, randomUUID } from 'node:crypto';
 import { readFileSync, writeFileSync, chmodSync } from 'node:fs';
 import { isIP } from 'node:net';
+import {domainToASCII} from 'node:url';
 import { join } from 'node:path';
 
 const error = (status,message) => Object.assign(new Error(message),{status});
@@ -22,8 +23,13 @@ export function vaultFromKey(key){
   };
 }
 export function sshFields(input,old={}) {
-  const host=input.ssh_host??old.ssh_host??'',port=input.ssh_port??old.ssh_port??22,user=input.ssh_user??old.ssh_user??'root';
-  if(typeof host!=='string'||(host&&!isIP(host)))throw error(400,'SSH 地址请填写 IPv4 或 IPv6，不含端口');
+  let host=input.ssh_host??old.ssh_host??'';const port=input.ssh_port??old.ssh_port??22,user=input.ssh_user??old.ssh_user??'root';
+  if(typeof host!=='string')throw error(400,'SSH 地址请填写 IP 或域名，端口单独填写');
+  host=host.trim();if(host&&!isIP(host)){
+    if(/[\s/:@?#\\]/.test(host)||/^[0-9.]+$/.test(host))throw error(400,'SSH 地址请填写 IP 或域名，端口单独填写');
+    host=domainToASCII(host.replace(/\.$/,'')).toLowerCase();
+    if(!host||host.length>253||host.split('.').length<2||host.split('.').some(label=>!/^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(label)))throw error(400,'SSH 域名格式无效');
+  }
   if(!Number.isInteger(port)||port<1||port>65535)throw error(400,'SSH 端口无效');
   if(typeof user!=='string'||!/^[_a-zA-Z][_a-zA-Z0-9.-]{0,63}$/.test(user))throw error(400,'SSH 用户名无效');
   return {ssh_host:host,ssh_port:port,ssh_user:user};
@@ -31,7 +37,7 @@ export function sshFields(input,old={}) {
 export function createSSH({db,vault,publicURL,bootstrap,ClientClass=Client}) {
   const drafts=new Map(),jobs=new Map(),probes=new Map(),connections=new Set();let stopped=false;
   const node=id=>{const n=db.prepare('SELECT * FROM nodes WHERE id=?').get(id);if(!n)throw error(404,'服务器不存在');return n;};
-  const config=n=>{if(!n.ssh_host)throw error(400,'请先保存服务器 IP 和 SSH 配置');return {host:n.ssh_host,port:n.ssh_port,username:n.ssh_user,readyTimeout:15000,keepaliveInterval:10000,keepaliveCountMax:3};};
+  const config=n=>{if(!n.ssh_host)throw error(400,'请先保存服务器 IP 或域名及 SSH 配置');return {host:n.ssh_host,port:n.ssh_port,username:n.ssh_user,readyTimeout:15000,keepaliveInterval:10000,keepaliveCountMax:3};};
   const friendly=e=>/authentication/i.test(e.message)?'SSH 登录失败，请检查用户名、密码和服务器密码登录设置':/host|fingerprint/i.test(e.message)?'SSH 指纹不匹配，请重新测试并核对服务器身份':/timed out|timeout/i.test(e.message)?'SSH 连接或部署超时，请检查网络、防火墙和 SSH 端口':/ECONNREFUSED/.test(e.message)?'SSH 端口拒绝连接':/ENETUNREACH|EHOSTUNREACH/.test(e.message)?'主控无法访问该服务器':'SSH 操作失败，请检查服务器 SSH 服务与网络';
   function connect(n,scan=false){return new Promise((resolve,reject)=>{
     if(stopped)return reject(error(503,'SSH 服务正在停止'));
@@ -80,8 +86,8 @@ export function createSSH({db,vault,publicURL,bootstrap,ClientClass=Client}) {
       for(const [key,value] of jobs)if(value.status!=='running'&&(jobs.size>100||Date.now()/1000-value.created>3600))jobs.delete(key);
       const redact=line=>{for(const s of [secret,vault.open(n.ssh_password,id)])if(s)line=line.replaceAll(s,'[已隐藏]');return line.replace(/[a-f0-9]{64}/g,'[已隐藏密钥]').replace(/[\x00-\x08\x0b-\x1f\x7f]/g,'');};
       const quote=value=>"'"+value.replaceAll("'","'\\''")+"'";
-      const script=`set -euo pipefail\nexport DEBIAN_FRONTEND=noninteractive\ncommand -v curl >/dev/null || { apt-get update; apt-get install -y curl ca-certificates; }\nif [[ -f /etc/lightprobe-agent.json ]]; then\n set -- --upgrade --server ${quote(publicURL)}${secret?" --token "+quote(secret):""}\nelse\n [[ -n ${quote(secret)} ]] || { echo '旧节点未保留安装密钥：请在详情重新生成密钥后重试部署。'; exit 1; }\n set -- --server ${quote(publicURL)} --token ${quote(secret)}\nfi\n${bootstrap}\nsystemctl is-active --quiet lightprobe-agent\necho '采集端服务已启动，请等待主控收到上报。'\n`;
-      (async()=>{let c;try{c=await connect(n);const command=n.ssh_user==='root'?'bash -s':'sudo -n bash -s';job.log+='SSH 已连接，正在安装或更新采集端…\n';const code=await exec(c,command,script,600000,line=>{job.log=(job.log+redact(line)+'\n').slice(-65536);});job.status=code===0?'success':'failed';job.log+=code===0?'部署完成；在线状态以采集端上报为准。\n':`部署失败（退出码 ${code??'未知'}），请检查上述日志。\n`;}catch(e){job.status='failed';job.log+=(e.status?e.message:friendly(e))+'\n';}finally{c?.end();job.finished=Math.floor(Date.now()/1000);}})();
+      const script=`set -eu\nif [ -f /etc/lightprobe-agent.json ]; then\n set -- --upgrade --server ${quote(publicURL)}${secret?" --token "+quote(secret):""}\nelse\n [ -n ${quote(secret)} ] || { echo '旧节点未保留安装密钥：请在详情重新生成密钥后重试部署。'; exit 1; }\n set -- --server ${quote(publicURL)} --token ${quote(secret)}\nfi\n${bootstrap}\nif command -v rc-service >/dev/null && [ -f /etc/init.d/lightprobe-agent ]; then rc-service lightprobe-agent status; else systemctl is-active --quiet lightprobe-agent; fi\necho '采集端服务已启动，请等待主控收到上报。'\n`;
+      (async()=>{let c;try{c=await connect(n);const command=n.ssh_user==='root'?'sh -s':'sudo -n sh -s';job.log+='SSH 已连接，正在安装或更新采集端…\n';const code=await exec(c,command,script,600000,line=>{job.log=(job.log+redact(line)+'\n').slice(-65536);});job.status=code===0?'success':'failed';job.log+=code===0?'部署完成；在线状态以采集端上报为准。\n':`部署失败（退出码 ${code??'未知'}），请检查上述日志。\n`;}catch(e){job.status='failed';job.log+=(e.status?e.message:friendly(e))+'\n';}finally{c?.end();job.finished=Math.floor(Date.now()/1000);}})();
       return status(job.id);
     },
     status,

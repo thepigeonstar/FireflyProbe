@@ -13,7 +13,7 @@ RUN npm ci --omit=dev --omit=optional --ignore-scripts
 COPY server/ ./server/
 COPY web/ ./web/
 COPY tools/ ./tools/
-COPY agent/install.sh agent/bootstrap.sh ./agent/
+COPY agent/install.sh agent/bootstrap.sh agent/entry.sh ./agent/
 COPY --from=agent-build /bin/lightprobe-agent-linux-* ./bin/
 RUN cd /app/bin && sha256sum lightprobe-agent-linux-* > SHA256SUMS
 RUN mkdir -p /app/data && chown -R node:node /app/data

@@ -12,8 +12,8 @@ test('安装文件白名单、二进制校验、禁止下载配置与源码',asy
   await new Promise(r=>app.server.listen(0,'127.0.0.1',r));
   const base='http://127.0.0.1:'+app.server.address().port;
   try {
-    for(const path of ['/install-agent.sh','/downloads/install.sh']) {
-      const r=await fetch(base+path);assert.equal(r.status,200);assert.match(await r.text(),/^#!\/usr\/bin\/env bash/);
+    for(const path of ['/install-agent.sh','/downloads/install.sh','/downloads/bootstrap.sh']) {
+      const r=await fetch(base+path);assert.equal(r.status,200);assert.match(await r.text(),/^#!(?:\/usr\/bin\/env bash|\/bin\/sh)/);
     }
     const sums=await (await fetch(base+'/downloads/SHA256SUMS')).text();
     for(const arch of ['amd64','arm64']) {

@@ -27,7 +27,8 @@ source /etc/os-release
 case "$ID" in
   debian) dpkg --compare-versions "$VERSION_ID" ge 11 || { echo "当前 Debian $VERSION_ID，需要 Debian 11 及以上。" >&2; exit 1; } ;;
   ubuntu) dpkg --compare-versions "$VERSION_ID" ge 22.04 || { echo '需要 Ubuntu 22.04 及以上。'; exit 1; } ;;
-  *) echo '首版安装脚本仅支持 Debian / Ubuntu。' >&2; exit 1 ;;
+  alpine) [[ "$VERSION_ID" =~ ^[0-9]+\.[0-9]+([.][0-9]+)?$ && "$(apk version -t "$VERSION_ID" 3.20)" != '<' ]] || { echo '需要稳定版 Alpine 3.20 及以上。' >&2; exit 1; } ;;
+  *) echo '支持 Debian / Ubuntu / Alpine。' >&2; exit 1 ;;
 esac
 case "$(uname -m)" in x86_64) arch=amd64 ;; aarch64|arm64) arch=arm64 ;; *) echo '仅提供 amd64 / arm64 程序。' >&2; exit 1 ;; esac
 if [[ -z "$binary_path" ]]; then
@@ -42,11 +43,20 @@ install -d -m 0755 /opt/lightprobe
 install -m 0755 "$binary_path" /opt/lightprobe/agent.new
 mv -f /opt/lightprobe/agent.new /opt/lightprobe/agent
 phase='安装 vnStat 和系统依赖'
-apt-get update
-DEBIAN_FRONTEND=noninteractive apt-get install -y vnstat python3 ca-certificates iproute2 tzdata
+if [[ "$ID" == alpine ]]; then
+  release=${VERSION_ID%.*}; [[ "$VERSION_ID" != *.*.* ]] && release=$VERSION_ID
+  repository="https://dl-cdn.alpinelinux.org/alpine/v$release/community"
+  if ! grep -qE "^[^#]+/v${release//./\.}/community/?([[:space:]]|$)" /etc/apk/repositories; then
+    printf '\n%s\n' "$repository" >> /etc/apk/repositories
+  fi
+  apk add --no-cache bash vnstat vnstat-openrc python3 ca-certificates iproute2 tzdata coreutils
+else
+  apt-get update
+  DEBIAN_FRONTEND=noninteractive apt-get install -y vnstat python3 ca-certificates iproute2 tzdata
+fi
 phase='检查 vnStat 版本和配置选项'
 vnstat_version=$(vnstat --version | awk '$1 == "vnStat" && $2 ~ /^[0-9]+\.[0-9]+/ {print $2; exit}')
-if [[ ! "$vnstat_version" =~ ^[0-9]+\.[0-9]+([.][0-9]+)?$ ]] || ! dpkg --compare-versions "$vnstat_version" ge 2.6; then
+if [[ ! "$vnstat_version" =~ ^[0-9]+\.[0-9]+([.][0-9]+)?$ ]] || [[ "$(printf '2.6\n%s\n' "$vnstat_version" | sort -V | head -n1)" != 2.6 ]]; then
   echo '采集端需要 vnStat 2.6 及以上，请检查软件包版本。' >&2
   exit 1
 fi
@@ -55,18 +65,33 @@ if vnstat --showconfig 2>/dev/null | grep -qE '^UseUTC[[:space:]]'; then support
 phase='读取主控时区配置'
 zone=$(/opt/lightprobe/agent --config "$config_path" --print-timezone)
 [[ "$zone" =~ ^[A-Za-z0-9_+/-]+$ && -f "/usr/share/zoneinfo/$zone" ]] || { echo '主控统计时区无效。' >&2; exit 1; }
-system_zone=$(timedatectl show --property=Timezone --value 2>/dev/null || cat /etc/timezone 2>/dev/null || true)
+system_zone=$(timedatectl show --property=Timezone --value 2>/dev/null || cat /etc/timezone 2>/dev/null || readlink -f /etc/localtime 2>/dev/null || true)
+system_zone=${system_zone#/usr/share/zoneinfo/}
 previous_zone="$system_zone"
 override=/etc/systemd/system/vnstat.service.d/lightprobe-timezone.conf
+if [[ "$ID" == alpine ]]; then override=/etc/conf.d/vnstatd; fi
 if [[ -f "$override" ]]; then previous_zone=$(sed -n 's/^Environment=TZ=//p' "$override" | head -n1); fi
+if [[ "$ID" == alpine && -f "$override" ]]; then
+  previous_zone=$(sed -n 's/^export TZ=//p' "$override" | head -n1)
+  previous_zone=${previous_zone:-$system_zone}
+fi
 if [[ -f /etc/vnstat.conf ]] && grep -qE '^UseUTC[[:space:]]+1([[:space:]]|$)' /etc/vnstat.conf; then previous_zone=UTC; fi
 history_start=$(TZ="$zone" date +%F)
 if [[ "$previous_zone" != "$zone" ]]; then
   history_start=$(TZ="$zone" date -d tomorrow +%F)
   echo "vnStat 统计时区将改为 $zone（不修改全局系统时区）。为避免混合旧时区数据，从 $history_start 开始接收日流量。"
 fi
-install -d -m 0755 /etc/systemd/system/vnstat.service.d
-printf '[Service]\nEnvironment=TZ=%s\n' "$zone" > "$override"
+if [[ "$ID" == alpine ]]; then
+  install -d -m 0755 /etc/conf.d
+  if [[ -f "$override" ]]; then
+    [[ -f "$override.lightprobe-backup" ]] || cp -p "$override" "$override.lightprobe-backup"
+    sed -i '/^export TZ=/d' "$override"
+  fi
+  printf '\nexport TZ=%s\n' "$zone" >> "$override"
+else
+  install -d -m 0755 /etc/systemd/system/vnstat.service.d
+  printf '[Service]\nEnvironment=TZ=%s\n' "$zone" > "$override"
+fi
 # Preserve history_start when reinstalling with the same node credentials.
 phase='配置网卡和流量历史'
 python3 - "$config_path" "$zone" "$history_start" <<'PY'
@@ -115,6 +140,36 @@ if [[ -f /etc/vnstat.conf ]]; then
   fi
 fi
 phase='配置并启动系统服务'
+if [[ "$ID" == alpine ]]; then
+  [[ -x /sbin/openrc-run && -f /etc/init.d/vnstatd ]] || { echo '需要正常运行 OpenRC 的 Alpine 服务器。' >&2; exit 1; }
+  # Alpine runs vnstatd as vnstat:vnstat; --add may have created SQLite as root.
+  chown vnstat:vnstat /var/lib/vnstat
+  find /var/lib/vnstat -maxdepth 1 -type f -name 'vnstat.db*' -exec chown vnstat:vnstat {} +
+  cat > /etc/init.d/lightprobe-agent <<'OPENRC'
+#!/sbin/openrc-run
+description="Firefly Probe monitoring agent"
+command="/opt/lightprobe/agent"
+command_args="--config /etc/lightprobe-agent.json"
+command_user="root"
+supervisor="supervise-daemon"
+respawn_delay=10
+respawn_max=0
+output_log="/var/log/lightprobe-agent.log"
+error_log="/var/log/lightprobe-agent.log"
+depend() { need net; after vnstatd; }
+start_pre() {
+  umask 077
+  checkpath -f -m 0600 -o root:root /var/log/lightprobe-agent.log
+}
+OPENRC
+  chmod 0755 /etc/init.d/lightprobe-agent
+  rc-update add vnstatd default
+  rc-service vnstatd restart
+  rc-update add lightprobe-agent default
+  rc-service lightprobe-agent restart
+  rc-service lightprobe-agent status
+  echo '采集端已安装。检查：rc-service lightprobe-agent status；日志：tail -n 50 /var/log/lightprobe-agent.log'
+else
 cat > /etc/systemd/system/lightprobe-agent.service <<'UNIT'
 [Unit]
 Description=LightProbe server monitoring agent
@@ -151,3 +206,4 @@ systemctl enable lightprobe-agent
 systemctl restart lightprobe-agent
 echo 'LightProbe 采集端已安装。检查：systemctl status lightprobe-agent --no-pager'
 echo '日志：journalctl -u lightprobe-agent -n 50 --no-pager'
+fi

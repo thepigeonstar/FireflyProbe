@@ -30,8 +30,9 @@ const defaults = { timezone: 'Asia/Shanghai', interval: 5, offline_seconds: 45, 
 const staticDir = fileURLToPath(new URL('../web/', import.meta.url));
 const publicFiles = new Map(['index.html', 'app.js', 'features.js','style.css','features.css','management.js','management.css','background.js','background.css','theme.js','theme.css', 'firefly.svg','public.html','public.js','plugin-host.js','remote-backup.js','traffic-history.js'].map(f => [f, readFileSync(join(staticDir, f))]));
 const downloads = new Map([
-  ['/install-agent.sh', fileURLToPath(new URL('../agent/bootstrap.sh', import.meta.url))],
+  ['/install-agent.sh', fileURLToPath(new URL('../agent/entry.sh', import.meta.url))],
   ['/downloads/google-auth.ps1',fileURLToPath(new URL('../tools/google-auth.ps1',import.meta.url))],
+  ['/downloads/bootstrap.sh',fileURLToPath(new URL('../agent/bootstrap.sh',import.meta.url))],
   ['/downloads/install.sh', fileURLToPath(new URL('../agent/install.sh', import.meta.url))],
   ['/downloads/SHA256SUMS', fileURLToPath(new URL('../bin/SHA256SUMS', import.meta.url))],
   ...['amd64','arm64'].map(arch => [`/downloads/lightprobe-agent-linux-${arch}`, fileURLToPath(new URL(`../bin/lightprobe-agent-linux-${arch}`, import.meta.url))])
@@ -105,7 +106,7 @@ export async function createApp(options = {}) {
   const clientIP=createClientIP(options.trustedProxies),loginLimiter=createLoginLimiter();
   const plugins=createPlugins(options.pluginDirectory??join(staticDir,'plugins'),db);
   const pluginAccess=createPluginAccess(db,plugins),pluginCalls=new Map();
-  const ssh=createSSH({db,vault,publicURL,bootstrap:readFileSync(fileURLToPath(new URL('../agent/bootstrap.sh',import.meta.url)),'utf8'),ClientClass:options.sshClient});
+  const ssh=createSSH({db,vault,publicURL,bootstrap:readFileSync(fileURLToPath(new URL('../agent/entry.sh',import.meta.url)),'utf8'),ClientClass:options.sshClient});
   function configuredNode(input,old={},id=old.id) {
     const fields={...nodeFields({...old,...input}),...sshFields(input,old)};
     if(input.ssh_password!==undefined){if(typeof input.ssh_password!=='string'||input.ssh_password.length>1024||input.ssh_password.includes('\0'))fail(400,'SSH 密码格式无效');if(input.ssh_password)fields.ssh_password=vault.seal(input.ssh_password,id);}
@@ -399,7 +400,7 @@ export async function createApp(options = {}) {
         const sshRoute=/^\/api\/nodes\/([a-f0-9-]{36})\/ssh\/(probe|trust|test|deploy)$/.exec(path);
         if(sshRoute&&method==='POST'){const [unused,id,action]=sshRoute;if(action==='probe')return send(res,200,await ssh.probe(id));if(action==='trust'){const input=await body(req);ssh.trust(id,input.fingerprint);return send(res,200,{ok:true});}if(action==='test')return send(res,200,await ssh.test(id));return send(res,202,ssh.deploy(id));}
         const jobRoute=/^\/api\/ssh\/jobs\/([a-f0-9-]{36})$/.exec(path);if(jobRoute&&method==='GET')return send(res,200,ssh.status(jobRoute[1]));
-        if(path==='/api/nodes'&&method==='GET') {const rates=fx.read();const {rates:unused,...fxInfo}=rates;return send(res,200,{nodes:snapshot(),settings:safeSettings(),cost_summary:costSummary(getNodes(),rates),fx_info:fxInfo,server_time:now(),version:'0.2.14',agent_version:'0.2.0'});}
+        if(path==='/api/nodes'&&method==='GET') {const rates=fx.read();const {rates:unused,...fxInfo}=rates;return send(res,200,{nodes:snapshot(),settings:safeSettings(),cost_summary:costSummary(getNodes(),rates),fx_info:fxInfo,server_time:now(),version:'0.2.15',agent_version:'0.2.0'});}
         const adminNetwork=/^\/api\/nodes\/([a-f0-9-]{36})\/network-history$/.exec(path);if(adminNetwork&&method==='GET')return send(res,200,publicHistory(adminNetwork[1],true));
         if(path==='/api/network/history'&&method==='GET')return send(res,200,publicHistory('network',true));
         if(path==='/api/costs'&&method==='GET')return send(res,200,{...costSummary(getNodes(),fx.read()),fx:fx.read()});
@@ -473,6 +474,6 @@ export async function createApp(options = {}) {
 function formatBytes(bytes) {const units=['B','KiB','MiB','GiB','TiB'];let i=0;while(bytes>=1024&&i<4){bytes/=1024;i++;}return bytes.toFixed(1)+' '+units[i];}
 if(process.argv[1] && import.meta.url===pathToFileURL(resolve(process.argv[1])).href) {
   const app=await createApp();
-  app.server.listen(Number(process.env.PORT ?? 8080),process.env.HOST ?? '127.0.0.1',()=>console.log(`Firefly Probe 0.2.14 listening on ${process.env.HOST ?? '127.0.0.1'}:${process.env.PORT ?? 8080}`));
+  app.server.listen(Number(process.env.PORT ?? 8080),process.env.HOST ?? '127.0.0.1',()=>console.log(`Firefly Probe 0.2.15 listening on ${process.env.HOST ?? '127.0.0.1'}:${process.env.PORT ?? 8080}`));
   let stopping=false;for(const sig of ['SIGINT','SIGTERM']) process.on(sig,async()=>{if(stopping)return;stopping=true;await app.close();process.exit(0);});
 }

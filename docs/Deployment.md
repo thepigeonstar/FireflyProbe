@@ -58,7 +58,7 @@ TLS 证书在现有代理中配置。若代理本身在另一个 Docker 容器�
 
 手动方式仍保留：展开“手动下载配置（备用）”，将配置与 `agent/install.sh`、对应架构的 `bin/lightprobe-agent-linux-*` 上传到同一目录，再执行 `sudo bash install.sh`。
 
-采集端安装脚本支持 Debian 11/12/13 与 Ubuntu 22.04 及以上的发行版检查路径，要求 systemd、apt 和可访问的主控 HTTPS。真实发行版安装仍应先在你的测试机验证。
+采集端支持 Debian 11/12/13、Ubuntu 22.04+（systemd/apt）和 Alpine 3.20+ 稳定版（OpenRC/apk），要求可访问主控 HTTPS。真实发行版安装仍应先在你的测试机验证。
 
 脚本会安装 vnStat、Python 3（仅用于安装配置）、CA 证书及基础工具；将采集程序放在 `/opt/lightprobe/agent`，配置写入 `/etc/lightprobe-agent.json`（权限 600）；配置 vnStat 的服务时区并重启 vnStat，设置本地日历史保留 730 天，然后启用 `lightprobe-agent.service`。
 
@@ -195,3 +195,21 @@ bash -o pipefail -c 'curl --proto "=https" --tlsv1.2 -fsS https://raw.githubuser
 卸载保留安装目录、配置与数据卷。卸载前完整数据副本位于安装目录的 `uninstall-backups`，包含数据库、SSH 密钥及配置；请妥善保存。使用自定义安装目录时在管道末端加 `bash -s -- --dir /你的目录`。卸载主控不会卸载服务器采集端；采集端配置需在迁移后按实际主控域名调整。
 
 Debian 11 采集端使用官方 vnStat 2.6 包，支持所需 JSON 日流量与 DailyDays 保留设置。参考：[Debian 11 vnStat 手册](https://manpages.debian.org/bullseye/vnstat/vnstat.1.en.html)。兼容性分支及解析已验证，实机安装仍需核对日志与首次上报；本次未扩大主控 Docker 自动安装的系统范围。
+
+## Alpine 采集端与 SSH 域名
+
+Alpine 使用后台生成的通用安装命令，入口为 sh，会自动准备 Bash、curl、Python 和证书。安装使用 apk 安装 vnstat、vnstat-openrc、iproute2、tzdata 和 coreutils；若缺少 community 仓库，仅补齐与当前稳定发行版本一致的官方仓库。不开启 edge。
+
+统计时区写入 /etc/conf.d/vnstatd 的 export TZ；不修改全局系统时区，不删除 vnStat 数据。服务为 /etc/init.d/lightprobe-agent，使用 OpenRC 开机自启和异常重启。需要真实运行 OpenRC 的 Alpine VPS，普通 Alpine Docker 容器不属于生产安装范围。
+
+```sh
+rc-service lightprobe-agent status
+tail -n 50 /var/log/lightprobe-agent.log
+rc-service vnstatd status
+```
+
+Alpine 日志为 root 私有文件，生产环境可按自己的日志保留策略加入轮转。OpenRC 服务未提供 systemd 相同的 CPU/内存和文件系统沙箱限制，请结合 VPS 资源限制部署。主控 Docker 自动安装范围保持不变，本次只扩展采集端。
+
+SSH 配置的地址可填写 IPv4、IPv6 或域名，例如 nathkt1.bytevirt.net。只填主机名，不带 https://、路径或 :端口；NAT 映射端口单独填写。更换域名或端口后需要重新确认指纹。支持国际域名并规范为 ASCII；实际解析和连接发生在主控。
+
+[Alpine OpenRC 官方说明](https://wiki.alpinelinux.org/wiki/OpenRC)、[Alpine vnstatd 服务脚本](https://github.com/alpinelinux/aports/blob/3.22-stable/community/vnstat/vnstatd.initd)。

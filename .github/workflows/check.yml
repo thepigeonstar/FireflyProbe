@@ -17,8 +17,9 @@ jobs:
       - run: npm test
       - run: go test ./... && go vet ./...
         working-directory: agent
-      - run: bash -n setup.sh update.sh install-master.sh uninstall-master.sh tools/uninstall-traffic-reporter.sh agent/install.sh agent/bootstrap.sh
-      - run: shellcheck -S warning setup.sh update.sh install-master.sh uninstall-master.sh tools/uninstall-traffic-reporter.sh agent/install.sh agent/bootstrap.sh
+      - run: bash -n setup.sh update.sh install-master.sh uninstall-master.sh tools/uninstall-traffic-reporter.sh agent/install.sh agent/bootstrap.sh agent/entry.sh
+      - run: shellcheck -S warning setup.sh update.sh install-master.sh uninstall-master.sh tools/uninstall-traffic-reporter.sh agent/install.sh agent/bootstrap.sh agent/entry.sh
       - run: sudo bash tests/install-master.test.sh
       - run: bash tests/docker-bootstrap.test.sh
       - run: docker build -t lightprobe-check .
+      - run: bash tests/alpine-install.test.sh

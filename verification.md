@@ -161,3 +161,7 @@ Browser verifies editable country codes/names/auto and settings plugin navigatio
 ## v0.2.14
 
 66 Node tests pass. Agent shell fixtures verify both Debian 11/12/13 entry points, rejection messages, credential-safe stage diagnostics, and conditional UseUTC configuration for vnStat 2.6. Go tests and vet pass, including a synthetic daily-byte fixture checked against upstream vnStat v2.6 src/dbjson.c. ShellCheck and bash syntax checks pass. This Windows workspace did not execute a real Debian 11 apt/systemd install; VPS first-report validation remains necessary. Agent binary source and version are unchanged.
+
+## v0.2.15
+
+69 Node tests pass. Tests cover Alpine POSIX launcher dependency preparation, stable release checks, safe argument handling, SSH hostname/IDN normalization and fingerprint revocation. Real SSH protocol tests pass with the portable sh command. Chrome verifies hostname entry, portable installation command, button layout and existing plugin security. ShellCheck and syntax checks pass; Alpine HTTP fixture compiles. A real Alpine 3.22 apk/OpenRC install/first-report/reinstall test is added to GitHub CI, but cannot be executed in this Windows workspace; do not treat it as already passed. Agent binary/version remain unchanged.

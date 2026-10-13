@@ -18,7 +18,7 @@ test('真实 SSH 协议：指纹确认、密码验证、部署日志脱敏、权
   const sshServer=new Server({hostKeys:[utils.generateKeyPairSync('ed25519').private]},client=>{
     client.on('error',()=>{});
     client.on('authentication',ctx=>{if(ctx.method==='password'&&ctx.username==='root'&&ctx.password===password)ctx.accept();else ctx.reject();});
-    client.on('ready',()=>client.on('session',accept=>{const session=accept();session.on('exec',(accept,unused,info)=>{const stream=accept();if(info.command==='id -u'){stream.write('0\n');stream.exit(0);stream.end();return;}assert.equal(info.command,'bash -s');let input='';stream.on('data',chunk=>input+=chunk.toString());stream.on('end',()=>{commandInput=input;const token=/--token '([a-f0-9]{64})'/.exec(input)?.[1];stream.write('installer output\n'+password+'\n'+(token||'')+'\n');stream.exit(failInstall?11:0);stream.end();});});}));
+    client.on('ready',()=>client.on('session',accept=>{const session=accept();session.on('exec',(accept,unused,info)=>{const stream=accept();if(info.command==='id -u'){stream.write('0\n');stream.exit(0);stream.end();return;}assert.equal(info.command,'sh -s');let input='';stream.on('data',chunk=>input+=chunk.toString());stream.on('end',()=>{commandInput=input;const token=/--token '([a-f0-9]{64})'/.exec(input)?.[1];stream.write('installer output\n'+password+'\n'+(token||'')+'\n');stream.exit(failInstall?11:0);stream.end();});});}));
   });
   await new Promise(r=>sshServer.listen(0,'127.0.0.1',r));
   const app=await createApp({password:'ssh-admin-password-2026',dbPath:join(dir,'db.sqlite'),publicURL:'https://probe.example.test',disableTelegram:true});

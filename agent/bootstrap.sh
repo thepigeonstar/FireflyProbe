@@ -38,7 +38,8 @@ source /etc/os-release
 case "$ID" in
   debian) dpkg --compare-versions "$VERSION_ID" ge 11 || { echo "当前 Debian $VERSION_ID，需要 Debian 11 及以上。" >&2; exit 1; } ;;
   ubuntu) dpkg --compare-versions "$VERSION_ID" ge 22.04 || { echo "当前 Ubuntu $VERSION_ID，需要 Ubuntu 22.04 及以上。" >&2; exit 1; } ;;
-  *) echo '仅支持 Debian 11+ / Ubuntu 22.04+。' >&2; exit 1 ;;
+  alpine) [[ "$VERSION_ID" =~ ^[0-9]+\.[0-9]+([.][0-9]+)?$ && "$(apk version -t "$VERSION_ID" 3.20)" != '<' ]] || { echo '需要稳定版 Alpine 3.20 及以上。' >&2; exit 1; } ;;
+  *) echo '支持 Debian 11+ / Ubuntu 22.04+ / Alpine 3.20+。' >&2; exit 1 ;;
 esac
 echo "系统检查通过：${PRETTY_NAME:-$ID $VERSION_ID}"
 case "$(uname -m)" in x86_64) arch=amd64 ;; aarch64|arm64) arch=arm64 ;; *) echo '仅支持 amd64 / arm64。' >&2; exit 1 ;; esac

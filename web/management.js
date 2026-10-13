@@ -52,13 +52,13 @@ function managementServers(){
 }
 $('#server-search').addEventListener('input',managementServers);$('#server-status').addEventListener('change',managementServers);
 function managementUpdateAvailable(node){const parse=value=>/^\d+\.\d+\.\d+$/.test(value||'')?value.split('.').map(Number):null,a=parse(node.last_version),b=parse(state.agent_version);if(!a||!b)return false;for(let i=0;i<3;i++){if(a[i]!==b[i])return a[i]<b[i];}return false;}
-async function managementCopyUpdate(){const inner=`curl --proto '=https' --tlsv1.2 -fsS ${shellQuote(location.origin+'/install-agent.sh')} | bash -s -- --upgrade`,command=`bash -o pipefail -c ${shellQuote(inner)}`;try{await navigator.clipboard.writeText(command);toast('更新命令已复制，在对应服务器以 root 执行');}catch{const dialog=$('#ssh-dialog');$('#ssh-title').textContent='采集端更新命令';$('#ssh-result').textContent='请复制下面的命令，在对应服务器以 root 执行。';$('#ssh-log').textContent=command;dialog.showModal();}}
+async function managementCopyUpdate(){const command=installAgentCommand(location.origin,'--upgrade');try{await navigator.clipboard.writeText(command);toast('更新命令已复制，在对应服务器以 root 执行');}catch{const dialog=$('#ssh-dialog');$('#ssh-title').textContent='采集端更新命令';$('#ssh-result').textContent='请复制下面的命令，在对应服务器以 root 执行。';$('#ssh-log').textContent=command;dialog.showModal();}}
 async function managementDeleteNode(id){const node=state.nodes.find(n=>n.id===id);if(!node||!confirm(`删除服务器“${node.name}”？主控中的流量与趋势历史将永久删除，服务器上的采集端不会自动卸载。`))return;try{await api('/api/nodes/'+id,{method:'DELETE'});await refresh();toast('服务器已删除');}catch(e){toast(e.message);}}
 async function managementShowJob(id){const n=state.nodes.find(x=>x.id===id);if(!n?.ssh_job)return;$('#ssh-title').textContent=n.name+' · 部署日志';$('#ssh-dialog').showModal();try{const job=await api('/api/ssh/jobs/'+n.ssh_job.id);$('#ssh-log').textContent=job.log;$('#ssh-result').textContent={running:'部署正在进行…',success:'部署完成',failed:'部署失败或中止'}[job.status];}catch(e){$('#ssh-result').textContent=e.message;}}
 let managementPolling=null;
 async function managementSSH(id,deploy){
   if(managementPolling){toast('请等待当前部署完成，再开始新的操作');return;}
-  const n=state.nodes.find(x=>x.id===id);if(!n?.ssh_host||!n.ssh_configured){toast('请先在配置中保存 IP、SSH 用户名和密码');return;}
+  const n=state.nodes.find(x=>x.id===id);if(!n?.ssh_host||!n.ssh_configured){toast('请先在配置中保存 IP 或域名、SSH 用户名和密码');return;}
   $('#ssh-title').textContent=`${n.name} · ${deploy?'一键部署':'测试 SSH'}`;$('#ssh-log').textContent='';$('#ssh-result').textContent='正在连接并核验服务器指纹…';$('#ssh-dialog').showModal();
   try{
     const probe=await post(`/api/nodes/${id}/ssh/probe`);

@@ -6,9 +6,9 @@ import {join} from 'node:path';
 import {spawnSync} from 'node:child_process';
 const bash=process.platform==='win32'?'D:/Program Files/Git/bin/bash.exe':'bash';
 const shellPath=p=>p.replaceAll('\\','/').replace(/^([A-Z]):\//i,(_,drive)=>'/'+drive.toLowerCase()+'/');
-test('采集端两个入口支持 Debian 11/12/13，旧版本拒绝时显示原因；Ubuntu 范围保持不变',()=>{
+test('采集端支持 Debian 11/12/13 与 Alpine 3.20+，旧版本拒绝时显示原因',()=>{
  for(const file of ['bootstrap.sh','install.sh']){const text=readFileSync(new URL('../agent/'+file,import.meta.url),'utf8'),gate=/case "\$ID" in[\s\S]*?\nesac/.exec(text)[0],compare='dpkg(){ local smallest; smallest=$(printf "%s\\n%s\\n" "$2" "$4" | sort -V | head -n1); [[ "$smallest" == "$4" ]]; }';
-  for(const [id,version,accepted] of [['debian','11',true],['debian','12',true],['debian','13',true],['debian','10',false],['ubuntu','22.04',true],['ubuntu','24.04',true],['ubuntu','20.04',false],['alpine','3.20',false]]){const run=spawnSync(bash,['-c',compare+'\nID=$1; VERSION_ID=$2\n'+gate,'fixture',id,version],{encoding:'utf8'});assert.equal(run.status===0,accepted,file+' '+id+' '+version+' '+run.stderr);if(!accepted)assert.ok((run.stdout+run.stderr).trim().length>0);}
+  for(const [id,version,accepted] of [['debian','11',true],['debian','12',true],['debian','13',true],['debian','10',false],['ubuntu','22.04',true],['ubuntu','24.04',true],['ubuntu','20.04',false],['alpine','3.20',true],['alpine','3.22.0',true],['alpine','3.19.0',false],['alpine','edge',false]]){const apk='apk(){ local smallest; smallest=$(printf "%s\\n%s\\n" "$3" "$4" | sort -V | head -n1); if [[ "$3" == "$4" ]]; then echo =; elif [[ "$smallest" == "$3" ]]; then echo \"<\"; else echo \">\"; fi; }';const run=spawnSync(bash,['-c',apk+'\n'+compare+'\nID=$1; VERSION_ID=$2\n'+gate,'fixture',id,version],{encoding:'utf8'});assert.equal(run.status===0,accepted,file+' '+id+' '+version+' '+run.stderr);if(!accepted)assert.ok((run.stdout+run.stderr).trim().length>0);}
  }
 });
 test('安装失败显示阶段、行号和退出码，不输出含密钥的命令',()=>{
