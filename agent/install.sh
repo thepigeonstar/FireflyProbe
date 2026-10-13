@@ -62,7 +62,8 @@ else
     fi
     exit "$status"
   fi
-  DEBIAN_FRONTEND=noninteractive apt-get install -y vnstat python3 ca-certificates iproute2 tzdata
+  # Install missing dependencies without coupling agent deployment to OS upgrades.
+  DEBIAN_FRONTEND=noninteractive apt-get install -y --no-upgrade vnstat python3 ca-certificates iproute2 tzdata
 fi
 phase='检查 vnStat 版本和配置选项'
 vnstat_version=$(vnstat --version | awk '$1 == "vnStat" && $2 ~ /^[0-9]+\.[0-9]+/ {print $2; exit}')
