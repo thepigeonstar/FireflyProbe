@@ -58,7 +58,7 @@ TLS 证书在现有代理中配置。若代理本身在另一个 Docker 容器�
 
 手动方式仍保留：展开“手动下载配置（备用）”，将配置与 `agent/install.sh`、对应架构的 `bin/lightprobe-agent-linux-*` 上传到同一目录，再执行 `sudo bash install.sh`。
 
-安装脚本支持 Debian 12/13 与 Ubuntu 22.04 及以上的发行版检查路径，要求 systemd、apt 和可访问的主控 HTTPS。真实发行版安装仍应先在你的测试机验证。
+采集端安装脚本支持 Debian 11/12/13 与 Ubuntu 22.04 及以上的发行版检查路径，要求 systemd、apt 和可访问的主控 HTTPS。真实发行版安装仍应先在你的测试机验证。
 
 脚本会安装 vnStat、Python 3（仅用于安装配置）、CA 证书及基础工具；将采集程序放在 `/opt/lightprobe/agent`，配置写入 `/etc/lightprobe-agent.json`（权限 600）；配置 vnStat 的服务时区并重启 vnStat，设置本地日历史保留 730 天，然后启用 `lightprobe-agent.service`。
 
@@ -71,7 +71,7 @@ TLS 证书在现有代理中配置。若代理本身在另一个 Docker 容器�
 - 重新安装相同节点、相同密钥且时区不变时保留原历史起点。轮换密钥后重新安装会更新历史起点，但主控已有历史不删除。
 - vnStat 初始建库、落盘存在延迟，首次日流量不一定马上出现。页面显示未同步提示，不把“没有数据”当成已采集的零流量。
 - 本地 vnStat 中保留的数据能在主控恢复后补报，但补报范围最多是后台设置的日历史保留天数。无法恢复采集前或本地已删除的数据。
-- 安装脚本添加 `/etc/systemd/system/vnstat.service.d/lightprobe-timezone.conf`，不修改全局系统时区。将 vnStat 的 `UseUTC` 设为 0，让服务使用指定的 TZ（选择 UTC 主控时 TZ 本身就是 UTC）。会备份首次修改前的 `/etc/vnstat.conf` 为 `.lightprobe-backup`。
+- 安装脚本添加 `/etc/systemd/system/vnstat.service.d/lightprobe-timezone.conf`，不修改全局系统时区。程序支持 UseUTC 时将其设为 0；vnStat 2.6 不写入该选项。让服务使用指定的 TZ（选择 UTC 主控时 TZ 本身就是 UTC）。会备份首次修改前的 `/etc/vnstat.conf` 为 `.lightprobe-backup`。
 
 ### 检查采集端
 
@@ -193,3 +193,5 @@ bash -o pipefail -c 'curl --proto "=https" --tlsv1.2 -fsS https://raw.githubuser
 ```
 
 卸载保留安装目录、配置与数据卷。卸载前完整数据副本位于安装目录的 `uninstall-backups`，包含数据库、SSH 密钥及配置；请妥善保存。使用自定义安装目录时在管道末端加 `bash -s -- --dir /你的目录`。卸载主控不会卸载服务器采集端；采集端配置需在迁移后按实际主控域名调整。
+
+Debian 11 采集端使用官方 vnStat 2.6 包，支持所需 JSON 日流量与 DailyDays 保留设置。参考：[Debian 11 vnStat 手册](https://manpages.debian.org/bullseye/vnstat/vnstat.1.en.html)。兼容性分支及解析已验证，实机安装仍需核对日志与首次上报；本次未扩大主控 Docker 自动安装的系统范围。

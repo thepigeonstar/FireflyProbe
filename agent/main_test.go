@@ -39,3 +39,12 @@ func TestVnstatDays(t *testing.T) {
 		t.Fatal("must reject incorrect interface")
 	}
 }
+
+func TestVnstat26DailyBytes(t *testing.T) {
+	// Shape verified against vnStat v2.6 src/dbjson.c; this is a synthetic fixture.
+	raw := []byte(`{"vnstatversion":"2.6","jsonversion":"2","interfaces":[{"name":"eth0","alias":"","created":{"date":{"year":2026,"month":10,"day":1}},"updated":{"date":{"year":2026,"month":10,"day":13},"time":{"hour":20,"minute":30}},"traffic":{"total":{"rx":5000000000,"tx":2000000000},"day":[{"id":1,"date":{"year":2026,"month":10,"day":12},"rx":4000000000,"tx":1500000000},{"id":2,"date":{"year":2026,"month":10,"day":13},"rx":1000000000,"tx":500000000}]}}]}`)
+	days, err := parseDays(raw, "eth0", 180, "2026-10-12")
+	if err != nil || len(days) != 2 || days[0].Rx != 4000000000 || days[1].Tx != 500000000 {
+		t.Fatalf("vnStat 2.6 daily bytes: %v %v", days, err)
+	}
+}

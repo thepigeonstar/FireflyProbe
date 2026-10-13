@@ -157,3 +157,7 @@ Browser verifies editable country codes/names/auto and settings plugin navigatio
 ## v0.2.13
 
 63 Node tests pass, including trusted proxy chains, separate visitor limits, gradual account delays, Telegram migration/masking/clearing and encrypted cross-VPS restore. Plugin tests cover capability checks, CSRF, sanitized monitoring, one-use approvals tied to request/session, revocation and code-update invalidation. Chrome confirms opaque iframe isolation from parent/cookies/storage/direct fetch, blocked settings access, rejected and accepted mutations, and desktop/mobile install-button separation. History and country-navigation browser regressions pass. ShellCheck passes. No real production SSH deployments or Google uploads performed for this release.
+
+## v0.2.14
+
+66 Node tests pass. Agent shell fixtures verify both Debian 11/12/13 entry points, rejection messages, credential-safe stage diagnostics, and conditional UseUTC configuration for vnStat 2.6. Go tests and vet pass, including a synthetic daily-byte fixture checked against upstream vnStat v2.6 src/dbjson.c. ShellCheck and bash syntax checks pass. This Windows workspace did not execute a real Debian 11 apt/systemd install; VPS first-report validation remains necessary. Agent binary source and version are unchanged.

@@ -1,6 +1,13 @@
 #!/usr/bin/env bash
-set -euo pipefail
+set -Eeuo pipefail
 umask 077
+phase='初始化'
+report_install_error() {
+  local status=$?
+  printf '采集端安装失败：%s（行 %s，退出码 %s）\n' "$phase" "${BASH_LINENO[0]}" "$status" >&2
+  exit "$status"
+}
+trap report_install_error ERR
 script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 config_path="$PWD/lightprobe-agent.json"
 binary_path=''
@@ -13,11 +20,12 @@ while [[ $# -gt 0 ]]; do
 done
 [[ $EUID -eq 0 ]] || { echo '请使用 sudo 或 root 运行。' >&2; exit 1; }
 [[ -f "$config_path" ]] || { echo '找不到 lightprobe-agent.json，请先在后台创建节点并下载配置。' >&2; exit 1; }
-[[ -f /etc/os-release ]] || exit 1
+phase='检查系统版本'
+[[ -f /etc/os-release ]] || { echo '无法读取 /etc/os-release，不能识别系统。' >&2; exit 1; }
 # shellcheck disable=SC1091
 source /etc/os-release
 case "$ID" in
-  debian) dpkg --compare-versions "$VERSION_ID" ge 12 || { echo '需要 Debian 12 及以上。'; exit 1; } ;;
+  debian) dpkg --compare-versions "$VERSION_ID" ge 11 || { echo "当前 Debian $VERSION_ID，需要 Debian 11 及以上。" >&2; exit 1; } ;;
   ubuntu) dpkg --compare-versions "$VERSION_ID" ge 22.04 || { echo '需要 Ubuntu 22.04 及以上。'; exit 1; } ;;
   *) echo '首版安装脚本仅支持 Debian / Ubuntu。' >&2; exit 1 ;;
 esac
@@ -28,12 +36,23 @@ if [[ -z "$binary_path" ]]; then
   done
 fi
 [[ -f "$binary_path" ]] || { echo "找不到 lightprobe-agent-linux-$arch，请从安装包 bin 目录上传。" >&2; exit 1; }
+phase='安装采集程序'
 install -d -m 0755 /opt/lightprobe
 # Avoid replacing a running executable in place.
 install -m 0755 "$binary_path" /opt/lightprobe/agent.new
 mv -f /opt/lightprobe/agent.new /opt/lightprobe/agent
+phase='安装 vnStat 和系统依赖'
 apt-get update
 DEBIAN_FRONTEND=noninteractive apt-get install -y vnstat python3 ca-certificates iproute2 tzdata
+phase='检查 vnStat 版本和配置选项'
+vnstat_version=$(vnstat --version | awk '$1 == "vnStat" && $2 ~ /^[0-9]+\.[0-9]+/ {print $2; exit}')
+if [[ ! "$vnstat_version" =~ ^[0-9]+\.[0-9]+([.][0-9]+)?$ ]] || ! dpkg --compare-versions "$vnstat_version" ge 2.6; then
+  echo '采集端需要 vnStat 2.6 及以上，请检查软件包版本。' >&2
+  exit 1
+fi
+supports_utc=false
+if vnstat --showconfig 2>/dev/null | grep -qE '^UseUTC[[:space:]]'; then supports_utc=true; fi
+phase='读取主控时区配置'
 zone=$(/opt/lightprobe/agent --config "$config_path" --print-timezone)
 [[ "$zone" =~ ^[A-Za-z0-9_+/-]+$ && -f "/usr/share/zoneinfo/$zone" ]] || { echo '主控统计时区无效。' >&2; exit 1; }
 system_zone=$(timedatectl show --property=Timezone --value 2>/dev/null || cat /etc/timezone 2>/dev/null || true)
@@ -49,6 +68,7 @@ fi
 install -d -m 0755 /etc/systemd/system/vnstat.service.d
 printf '[Service]\nEnvironment=TZ=%s\n' "$zone" > "$override"
 # Preserve history_start when reinstalling with the same node credentials.
+phase='配置网卡和流量历史'
 python3 - "$config_path" "$zone" "$history_start" <<'PY'
 import json, os, sys, urllib.request, subprocess, re
 source, zone, start = sys.argv[1:]
@@ -85,12 +105,16 @@ if [[ -f /etc/vnstat.conf ]]; then
   else
     printf '\nDailyDays 730\n' >> /etc/vnstat.conf
   fi
-  if grep -qE '^UseUTC[[:space:]]' /etc/vnstat.conf; then
-    sed -i 's/^UseUTC[[:space:]].*/UseUTC 0/' /etc/vnstat.conf
-  else
-    printf '\nUseUTC 0\n' >> /etc/vnstat.conf
+  # vnStat 2.6 uses local daemon time and has no UseUTC configuration option.
+  if [[ "$supports_utc" == true ]]; then
+    if grep -qE '^UseUTC[[:space:]]' /etc/vnstat.conf; then
+      sed -i 's/^UseUTC[[:space:]].*/UseUTC 0/' /etc/vnstat.conf
+    else
+      printf '\nUseUTC 0\n' >> /etc/vnstat.conf
+    fi
   fi
 fi
+phase='配置并启动系统服务'
 cat > /etc/systemd/system/lightprobe-agent.service <<'UNIT'
 [Unit]
 Description=LightProbe server monitoring agent

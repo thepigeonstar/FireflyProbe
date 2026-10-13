@@ -21,7 +21,7 @@ bash -o pipefail -c 'curl --proto "=https" --tlsv1.2 -fsS https://raw.githubuser
 
 同一命令自动区分安装/更新。默认目录 `/root/FireflyProbe`，旧 `/root/lightprobe` 安装自动在原目录更新；更新前备份，保留已有配置与数据。新安装按提示配置域名和 HTTPS；已有 Nginx 时反向代理到本机 8080。
 
-域名首页默认公开页，管理员默认入口 `/admin`。在服务器列表添加节点后，复制安装命令到节点执行；也可配置 SSH，由主控安装或更新。支持 Debian 12/13、Ubuntu 22.04+，amd64/arm64。
+域名首页默认公开页，管理员默认入口 `/admin`。在服务器列表添加节点后，复制安装命令到节点执行；也可配置 SSH，由主控安装或更新。采集端支持 Debian 11/12/13、Ubuntu 22.04+，amd64/arm64。
 
 ## 文档
 
@@ -30,7 +30,7 @@ bash -o pipefail -c 'curl --proto "=https" --tlsv1.2 -fsS https://raw.githubuser
 - [生产安全配置](docs/Security.md)
 - [示例插件包](examples/my-summary.ffplugin.json) · [服务器工具箱](examples/server-toolbox.ffplugin.json)
 - [插件开发](docs/wiki/Plugin-Development.md) · [GitHub Wiki](https://github.com/thepigeonstar/FireflyProbe/wiki)
-- [本次更新](UPDATE-v0.2.13.md) · [验证记录](verification.md)
+- [本次更新](UPDATE-v0.2.14.md) · [验证记录](verification.md)
 
 主控：Node.js 24、SQLite、Docker。采集端：Go、systemd、vnStat。
 
