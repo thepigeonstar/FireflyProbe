@@ -51,12 +51,12 @@ test('完整 API：认证、幂等流量、网卡锁定、通知、50 台上报�
       assert.equal((await call('/api/agent/report',{method:'POST',admin:false,secret,data:report({days:[{date:today,rx:9000,tx:9000}],history_timezone:'UTC'})})).status,200);
       const nodes=await call('/api/nodes');assert.equal(nodes.data.nodes[0].traffic.measured,3000);assert.match(nodes.data.nodes[0].history_error,/时区/);
     });
-    await t.test('设置验证、管理员读取已保存 Token、总览不含 Token、额度通知去重',async()=>{
+    await t.test('设置验证、Token 加密保存且不回显、总览不含 Token、额度通知去重',async()=>{
       assert.equal((await call('/api/settings',{method:'PUT',data:{interval:60,offline_seconds:45}})).status,400);
       assert.equal((await call('/api/settings',{method:'PUT',data:{timezone:'UTC'}})).status,400);
       const settings=await call('/api/settings',{method:'PUT',data:{telegram_token:'123456789:TEST_TOKEN_NOT_REAL',telegram_chat:'-100123456',thresholds:[20],report_enabled:false}});
-      assert.equal(settings.status,200);assert.equal(settings.data.telegram_token,'123456789:TEST_TOKEN_NOT_REAL');assert.equal(settings.data.telegram_configured,true);
-      assert.equal((await call('/api/settings')).data.telegram_token,'123456789:TEST_TOKEN_NOT_REAL');
+      assert.equal(settings.status,200);assert.equal(settings.data.telegram_token,undefined);assert.equal(settings.data.telegram_configured,true);
+      assert.equal((await call('/api/settings')).data.telegram_token,undefined);
       assert.equal((await call('/api/nodes')).data.settings.telegram_token,undefined);
       assert.equal((await call('/api/settings',{admin:false})).status,401);
       app.db.prepare("UPDATE nodes SET history_error='',history_timezone='Asia/Shanghai' WHERE id=?").run(id);

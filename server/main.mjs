@@ -5,6 +5,10 @@ import { pipeline } from 'node:stream/promises';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { resolve, join, dirname } from 'node:path';
 import { randomBytes, randomUUID, createHash } from 'node:crypto';
+import {createClientIP,createLoginLimiter} from './login-security.mjs';
+import {loadTelegramSettings,persistTelegramSettings,withoutTelegramToken} from './telegram-secret.mjs';
+import {pluginFrame,pluginNodes} from './plugin-frame.mjs';
+import {createPluginAccess,pluginScopes} from './plugin-access.mjs';
 import {trafficHistory} from './traffic-history.mjs';
 import { openStore, dayKey, validDate, dailyTotals } from './store.mjs';
 import { brandDefaults, brandView, validateBrand } from './brand.mjs';
@@ -54,7 +58,8 @@ function nodeFields(data) {
 function settingsFields(input, old) {
   const s = { ...old };
   try {Object.assign(s,validateBrand(input,old));} catch(e) {fail(400,e.message);}
-  for (const k of ['timezone','telegram_token','telegram_chat']) if (input[k] !== undefined) s[k] = textValue(input[k], k === 'telegram_token' ? 150 : 80, k);
+  for (const k of ['timezone','telegram_token','telegram_chat']) if (input[k] !== undefined) {if(k==='telegram_token'&&!input[k])continue;s[k] = textValue(input[k], k === 'telegram_token' ? 150 : 80, k);}
+  if(input.telegram_clear!==undefined){if(typeof input.telegram_clear!=='boolean')fail(400,'Token 清除选项无效');if(input.telegram_clear)s.telegram_token='';}
   try { new Intl.DateTimeFormat('en', { timeZone: s.timezone }); } catch { fail(400, '时区无效'); }
   for (const [k, min, max] of [['interval',3,60],['offline_seconds',15,600],['keep_days',40,730],['trend_days',1,30],['report_hour',0,23],['report_minute',0,59]]) if (input[k] !== undefined) s[k] = finite(input[k], min, max, k, true);
   if (s.offline_seconds < s.interval * 3) fail(400, '离线阈值至少为上报间隔的三倍');
@@ -87,7 +92,7 @@ export async function createApp(options = {}) {
   let settings = { ...initial, ...JSON.parse(savedSettings?.value ?? '{}') };
   Object.assign(settings,validatePaths({},settings));
   if(!savedSettings)db.prepare("INSERT INTO settings VALUES('config',?)").run(JSON.stringify(settings));
-  const sessions = new Map(), latest = new Map(), loginLimits = new Map(), noticeState = new Map();
+  const sessions = new Map(), latest = new Map(),  noticeState = new Map();
   const fx=createRates(()=>db,{disableExternal:options.disableExternal??options.disableTelegram,fetchRates:options.fetchRates});
   const backups=createBackups(()=>db,dirname(dbPath),()=>settings);
   let loggingIn = 0, workerBusy = false, closed = false,notificationGraceUntil=0;
@@ -96,7 +101,10 @@ export async function createApp(options = {}) {
   if (secure && !publicURL.startsWith('https://')) throw new Error('安全 Cookie 模式需要 HTTPS PUBLIC_URL');
   let appOrigin = publicURL ? new URL(publicURL).origin : '';
   const vault=createVault(dirname(dbPath));
+  db.exec('PRAGMA secure_delete=ON');loadTelegramSettings(db,vault,settings);
+  const clientIP=createClientIP(options.trustedProxies),loginLimiter=createLoginLimiter();
   const plugins=createPlugins(options.pluginDirectory??join(staticDir,'plugins'),db);
+  const pluginAccess=createPluginAccess(db,plugins),pluginCalls=new Map();
   const ssh=createSSH({db,vault,publicURL,bootstrap:readFileSync(fileURLToPath(new URL('../agent/bootstrap.sh',import.meta.url)),'utf8'),ClientClass:options.sshClient});
   function configuredNode(input,old={},id=old.id) {
     const fields={...nodeFields({...old,...input}),...sshFields(input,old)};
@@ -113,7 +121,7 @@ export async function createApp(options = {}) {
   function countryDrain(){while(!closed&&geoActive<2&&geoPending.size){const [id,ip]=geoPending.entries().next().value;geoPending.delete(id);geoActive++;const epoch=restoreEpoch;(async()=>{try{const data=options.countryLookup?await options.countryLookup(ip):await fetch('https://api.country.is/'+encodeURIComponent(ip),{signal:AbortSignal.timeout(4000)}).then(r=>{if(!r.ok)throw Error('lookup');return r.json();});if(!closed&&!restoring&&epoch===restoreEpoch&&/^[A-Z]{2}$/.test(data.country||'')&&publicFiles.has('flags/'+data.country.toLowerCase()+'.svg')){db.prepare('UPDATE nodes SET country_code=?,country_ip=? WHERE id=?').run(data.country,ip,id);publicCache=null;}}catch{}finally{geoActive--;countryDrain();}})();}}
   const getNodes = () => db.prepare('SELECT * FROM nodes ORDER BY sort,name').all();
   const safeSettings = () => ({ ...settings,admin_user:account.username, brand_logo:undefined, brand_favicon:undefined, telegram_token: undefined, telegram_configured: Boolean(settings.telegram_token && settings.telegram_chat) });
-  const editableSettings = () => ({ ...settings,admin_user:account.username, telegram_configured: Boolean(settings.telegram_token && settings.telegram_chat) });
+  const editableSettings = () => ({ ...withoutTelegramToken(settings),admin_user:account.username, telegram_configured: Boolean(settings.telegram_token && settings.telegram_chat) });
   const send = (res, status, data) => { res.writeHead(status, { 'Content-Type':'application/json; charset=utf-8' }); res.end(JSON.stringify(data)); };
   const enqueue = (key, message) => {
     if (!settings.telegram_token || !settings.telegram_chat) return false;
@@ -273,8 +281,10 @@ export async function createApp(options = {}) {
         const nodes=candidate.prepare('SELECT * FROM nodes').all();if(nodes.length>200)fail(400,'备份节点超过 200 台');for(const n of nodes){nodeFields(n);sshFields(n);if(typeof n.ssh_fingerprint!=="string"||n.ssh_fingerprint&& !/^SHA256:[A-Za-z0-9+/]{43}$/.test(n.ssh_fingerprint))fail(400,"备份 SSH 指纹无效");}
         const pluginRows=candidate.prepare("SELECT key,value FROM settings WHERE key LIKE 'plugin:%'").all();if(pluginRows.length>30)fail(400,'备份插件超过 30 个');for(const row of pluginRows){const pack=validatePluginPackage(JSON.parse(row.value));if(row.key!=='plugin:'+pack.manifest.id)fail(400,'备份插件 ID 不一致');}
         if(archive){const sourceVault=vaultFromKey(Buffer.from(archive.ssh_key,'base64'));for(const node of nodes)for(const field of ['ssh_password','agent_secret'])if(node[field])candidate.prepare('UPDATE nodes SET '+field+'=? WHERE id=?').run(vault.seal(sourceVault.open(node[field],node.id),node.id),node.id);
+          const telegramSecret=candidate.prepare("SELECT value FROM settings WHERE key='telegram_secret'").get();if(telegramSecret)candidate.prepare("UPDATE settings SET value=? WHERE key='telegram_secret'").run(vault.seal(sourceVault.open(telegramSecret.value,'telegram-token'),'telegram-token'));
           const cloud=candidate.prepare("SELECT value FROM settings WHERE key='rclone_config'").get();if(cloud){const text=sourceVault.open(cloud.value,'rclone-config');parseDriveConfig(text);candidate.prepare("UPDATE settings SET value=? WHERE key='rclone_config'").run(vault.seal(text,'rclone-config'));}
           const remote=candidate.prepare("SELECT value FROM settings WHERE key='remote_backup'").get();if(remote){const c=remoteFields({},JSON.parse(remote.value));if(c.pass_cipher)c.pass_cipher=vault.seal(sourceVault.open(c.pass_cipher,'remote-backup'),'remote-backup');candidate.prepare("UPDATE settings SET value=? WHERE key='remote_backup'").run(JSON.stringify(c));}}
+      loadTelegramSettings(candidate,vault,{...initial,...saved});
       }finally{candidate.close();}
       if(restoring||backups.busy||remoteBackup.busy||epoch!==restoreEpoch||getNodes().some(n=>ssh.busy(n.id)))fail(409,'已有恢复或部署操作，请稍后重试');
       restoring=true;
@@ -301,6 +311,7 @@ export async function createApp(options = {}) {
         }catch(e){db.exec('ROLLBACK');throw e;}
       }finally{db.exec('DETACH DATABASE restored');}
       settings={...initial,...JSON.parse(db.prepare("SELECT value FROM settings WHERE key='config'").get()?.value??'{}')};
+      loadTelegramSettings(db,vault,settings);pluginAccess.reset();
       notificationGraceUntil=now()+settings.offline_seconds;
       restoreEpoch++;geoAttempts.clear();geoPending.clear();ssh.reset();publicHistoryCache.clear();
       publicCache=null;
@@ -340,12 +351,12 @@ export async function createApp(options = {}) {
       }
       if(method==='POST'&&path===settings.admin_path+'/api/login') {
         if(req.headers.origin && appOrigin && req.headers.origin!==appOrigin) fail(403,'来源无效');
-        const ip=req.socket.remoteAddress ?? 'unknown';
-        let limit=loginLimits.get(ip); if(!limit||limit.until<now()) { limit={count:0,until:now()+300}; if(loginLimits.size>=1000) loginLimits.delete(loginLimits.keys().next().value); loginLimits.set(ip,limit); }
-        if(++limit.count>15 || loggingIn>=3) fail(429,'登录尝试过多，请五分钟后再试');
-        const data=await body(req); if(typeof data.password!=='string'||data.password.length>256) fail(400,'密码无效');
-        loggingIn++;let valid;try{valid=await account.verify(data.password);}finally{loggingIn--;}
-        if(data.username!==account.username||!valid) fail(401,'用户名或密码错误');
+        const ip=await clientIP(req);if(loggingIn>=3)fail(429,'登录请求繁忙，请稍后重试');
+        const data=await body(req);if(typeof data.password!=='string'||data.password.length>256||typeof data.username!=='string'||data.username.length>64)fail(400,'账号或密码无效');
+        const delay=loginLimiter.attempt(ip,data.username);
+        loggingIn++;let valid;try{if(delay)await new Promise(r=>setTimeout(r,delay));valid=await account.verify(data.password);}finally{loggingIn--;}
+        valid=valid&&data.username===account.username;loginLimiter.result(data.username,valid);
+        if(!valid)fail(401,'用户名或密码错误');
         const id=token(),csrf=token(); if(sessions.size>=500) sessions.delete(sessions.keys().next().value);
         sessions.set(id,{csrf,expires:now()+43200});
         res.setHeader('Set-Cookie',`lp_session=${id}; HttpOnly; SameSite=Strict; Path=/; Max-Age=43200${secure?'; Secure':''}`);
@@ -364,7 +375,23 @@ export async function createApp(options = {}) {
         if(path==='/api/remote-backup/token'&&method==='POST'){const input=await body(req);if(typeof input.token!=='string'||input.token.length>16000)fail(400,'授权结果格式无效');let token;try{token=JSON.parse(input.token);}catch{fail(400,'请粘贴完整 JSON 授权结果');}if(!token||Array.isArray(token)||typeof token.access_token!=='string'||typeof token.refresh_token!=='string')fail(400,'授权结果缺少访问或刷新 Token');const config='[gdrive]\ntype = drive\nscope = drive.file\ntoken = '+JSON.stringify(token)+'\n';return send(res,200,remoteBackup.importConfig(config));}
         if(path==='/api/remote-backup/config'&&method==='POST')return send(res,200,remoteBackup.importConfig((await body(req)).config));
         if(path==='/api/remote-backup/run'&&method==='POST')return send(res,202,remoteBackup.start());
-        if(path==='/api/plugins'&&method==='GET')return send(res,200,plugins.list());
+        if(path==='/api/plugins'&&method==='GET')return send(res,200,plugins.list().map(p=>({...p,access:pluginAccess.view(p.id),scope_labels:pluginScopes})));
+        const pluginPermission=/^\/api\/plugins\/([a-z][a-z0-9-]{0,39})\/permissions$/.exec(path);
+        if(pluginPermission&&method==='PUT'){const input=await body(req);const access=pluginAccess.grant(pluginPermission[1],input.permissions);return send(res,200,access);}
+        const pluginFrameRoute=/^\/api\/plugins\/([a-z][a-z0-9-]{0,39})\/frame$/.exec(path);
+        if(pluginFrameRoute&&method==='GET'){const source=plugins.source(pluginFrameRoute[1]);if(source===undefined)fail(404,'插件不存在');const frame=pluginFrame(source);res.removeHeader('X-Frame-Options');res.setHeader('Content-Security-Policy',frame.csp);res.setHeader('Content-Type','text/html; charset=utf-8');return res.end(frame.html);}
+        const pluginBridge=/^\/api\/plugins\/([a-z][a-z0-9-]{0,39})\/(approve|invoke)$/.exec(path);
+        if(pluginBridge&&method==='POST'){
+          const input=await body(req),id=pluginBridge[1];
+          if(pluginBridge[2]==='approve')return send(res,200,pluginAccess.approve(id,input,session.cookie));
+          const op=pluginAccess.invoke(id,input,session.cookie),rateKey=session.cookie+':'+id;let rate=pluginCalls.get(rateKey);if(!rate||rate.until<now()){if(pluginCalls.size>=500)pluginCalls.delete(pluginCalls.keys().next().value);rate={count:0,until:now()+60};pluginCalls.set(rateKey,rate);}if(++rate.count>60)fail(429,'插件请求过于频繁，请稍后再试');
+          if(op.path==='/api/nodes'&&op.method==='GET')return send(res,200,{nodes:pluginNodes(snapshot()),settings:{timezone:settings.timezone,interval:settings.interval}});
+          if(op.path==='/api/notifications/send'){if(!enqueue('plugin:'+id+':'+randomUUID(),'🔌 '+plugins.list().find(p=>p.id===id).name+'\n'+op.data.message))fail(400,'请先配置 Telegram 通知');return send(res,200,{ok:true,message:'通知已加入发送队列'});}
+          const port=server.address()?.port;if(!port)fail(503,'主控尚未启动');
+          const response=await fetch('http://127.0.0.1:'+port+op.path,{method:op.method,headers:{'Content-Type':'application/json',Cookie:req.headers.cookie||'','X-CSRF-Token':session.csrf},body:op.method==='GET'?undefined:JSON.stringify(op.data??{}),signal:AbortSignal.timeout(op.scope==='ssh.deploy'?60000:20000),redirect:'error'});
+          let result=await response.json();if(op.path==='/api/nodes'&&op.method==='POST'&&response.ok)result={id:result.id,message:'服务器已添加；采集端密钥请在后台管理'};return send(res,response.status,result);
+        }
+
         const pluginRoute=/^\/api\/plugins\/([a-z][a-z0-9-]{0,39})\/module$/.exec(path);if(pluginRoute&&method==='GET'){const source=plugins.source(pluginRoute[1]);if(source===undefined)fail(404,'插件不存在');res.writeHead(200,{'Content-Type':'text/javascript; charset=utf-8','Cache-Control':'no-store'});return res.end(source);}
         if(path==='/api/account'&&method==='POST'){const result=await account.change(await body(req));sessions.clear();res.setHeader('Set-Cookie','lp_session=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0');return send(res,200,{...result,redirect_admin:settings.admin_path,message:'账号已更新，请重新登录'});}
         if(path==='/api/session'&&method==='GET') return send(res,200,{csrf:session.csrf,username:account.username});
@@ -372,7 +399,7 @@ export async function createApp(options = {}) {
         const sshRoute=/^\/api\/nodes\/([a-f0-9-]{36})\/ssh\/(probe|trust|test|deploy)$/.exec(path);
         if(sshRoute&&method==='POST'){const [unused,id,action]=sshRoute;if(action==='probe')return send(res,200,await ssh.probe(id));if(action==='trust'){const input=await body(req);ssh.trust(id,input.fingerprint);return send(res,200,{ok:true});}if(action==='test')return send(res,200,await ssh.test(id));return send(res,202,ssh.deploy(id));}
         const jobRoute=/^\/api\/ssh\/jobs\/([a-f0-9-]{36})$/.exec(path);if(jobRoute&&method==='GET')return send(res,200,ssh.status(jobRoute[1]));
-        if(path==='/api/nodes'&&method==='GET') {const rates=fx.read();const {rates:unused,...fxInfo}=rates;return send(res,200,{nodes:snapshot(),settings:safeSettings(),cost_summary:costSummary(getNodes(),rates),fx_info:fxInfo,server_time:now(),version:'0.2.12',agent_version:'0.2.0'});}
+        if(path==='/api/nodes'&&method==='GET') {const rates=fx.read();const {rates:unused,...fxInfo}=rates;return send(res,200,{nodes:snapshot(),settings:safeSettings(),cost_summary:costSummary(getNodes(),rates),fx_info:fxInfo,server_time:now(),version:'0.2.13',agent_version:'0.2.0'});}
         const adminNetwork=/^\/api\/nodes\/([a-f0-9-]{36})\/network-history$/.exec(path);if(adminNetwork&&method==='GET')return send(res,200,publicHistory(adminNetwork[1],true));
         if(path==='/api/network/history'&&method==='GET')return send(res,200,publicHistory('network',true));
         if(path==='/api/costs'&&method==='GET')return send(res,200,{...costSummary(getNodes(),fx.read()),fx:fx.read()});
@@ -409,7 +436,7 @@ export async function createApp(options = {}) {
           if(!match[2]&&method==='DELETE') {if(ssh.busy(node.id))fail(409,'部署中不能删除服务器');db.prepare('DELETE FROM nodes WHERE id=?').run(node.id);latest.delete(node.id);noticeState.delete(node.id);geoAttempts.delete(node.id);geoPending.delete(node.id);publicCache=null;return send(res,200,{ok:true});}
         }
         if(path==='/api/settings'&&method==='GET') return send(res,200,editableSettings());
-        if(path==='/api/settings'&&method==='PUT') {const input=await body(req),updated=settingsFields(input,settings);if(input.notification_targets!==undefined){const reportChanged=JSON.stringify(settings.notification_targets?.report??null)!==JSON.stringify(updated.notification_targets.report);for(const job of db.prepare("SELECT id,event_key FROM outbox WHERE status='pending'").all()){const [kind,id]=job.event_key.split(':'),type=({quota:'quota',offline:'offline',recovery:'offline',resource:'resource','resource-recovery':'resource',expiry:'expiry',expired:'expiry'})[kind];if((kind==='daily'&&reportChanged)||(type&&!notificationSelected(updated,type,id)))db.prepare("UPDATE outbox SET event_key=event_key||?,status='failed',error='通知服务器范围调整，已取消待发送通知' WHERE id=?").run(':scope-'+randomUUID(),job.id);}}db.prepare("INSERT INTO settings VALUES('config',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value").run(JSON.stringify(updated));const pathChanged=settings.admin_path!==updated.admin_path;settings=updated;publicCache=null;publicHistoryCache.clear();if(pathChanged){sessions.clear();res.setHeader('Set-Cookie','lp_session=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0');}return send(res,200,{...editableSettings(),redirect_admin:pathChanged?settings.admin_path:undefined});}
+        if(path==='/api/settings'&&method==='PUT') {const input=await body(req),updated=settingsFields(input,settings);if(input.notification_targets!==undefined){const reportChanged=JSON.stringify(settings.notification_targets?.report??null)!==JSON.stringify(updated.notification_targets.report);for(const job of db.prepare("SELECT id,event_key FROM outbox WHERE status='pending'").all()){const [kind,id]=job.event_key.split(':'),type=({quota:'quota',offline:'offline',recovery:'offline',resource:'resource','resource-recovery':'resource',expiry:'expiry',expired:'expiry'})[kind];if((kind==='daily'&&reportChanged)||(type&&!notificationSelected(updated,type,id)))db.prepare("UPDATE outbox SET event_key=event_key||?,status='failed',error='通知服务器范围调整，已取消待发送通知' WHERE id=?").run(':scope-'+randomUUID(),job.id);}}persistTelegramSettings(db,vault,updated);const pathChanged=settings.admin_path!==updated.admin_path;settings=updated;publicCache=null;publicHistoryCache.clear();if(pathChanged){sessions.clear();res.setHeader('Set-Cookie','lp_session=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0');}return send(res,200,{...editableSettings(),redirect_admin:pathChanged?settings.admin_path:undefined});}
         if(path==='/api/notifications'&&method==='GET') return send(res,200,db.prepare('SELECT id,status,attempts,created,sent,error FROM outbox ORDER BY id DESC LIMIT 5').all());
         if(path==='/api/notifications/test'&&method==='POST') {if(!enqueue(`test:${randomUUID()}`,`✅ ${settings.brand_name} 通知测试成功`)) fail(400,'请先配置 Telegram Token 和 Chat ID');return send(res,200,{ok:true,message:'已加入发送队列，请稍后查看状态'});}
         fail(404,'接口不存在');
@@ -436,7 +463,7 @@ export async function createApp(options = {}) {
     if(restoring)return;
     const stamp=now();
     for(const [id,s] of sessions) if(s.expires<stamp) sessions.delete(id);
-    for(const [id,v] of loginLimits) if(v.until<stamp) loginLimits.delete(id);
+    loginLimiter.prune();
     db.prepare('DELETE FROM minutes WHERE minute<?').run(stamp-settings.trend_days*86400);
     db.prepare('DELETE FROM daily WHERE date<?').run(dayKey(new Date((stamp-settings.keep_days*86400)*1000),settings.timezone));
     db.prepare("DELETE FROM outbox WHERE status='sent' AND created<?").run(stamp-90*86400);
@@ -446,6 +473,6 @@ export async function createApp(options = {}) {
 function formatBytes(bytes) {const units=['B','KiB','MiB','GiB','TiB'];let i=0;while(bytes>=1024&&i<4){bytes/=1024;i++;}return bytes.toFixed(1)+' '+units[i];}
 if(process.argv[1] && import.meta.url===pathToFileURL(resolve(process.argv[1])).href) {
   const app=await createApp();
-  app.server.listen(Number(process.env.PORT ?? 8080),process.env.HOST ?? '127.0.0.1',()=>console.log(`Firefly Probe 0.2.12 listening on ${process.env.HOST ?? '127.0.0.1'}:${process.env.PORT ?? 8080}`));
+  app.server.listen(Number(process.env.PORT ?? 8080),process.env.HOST ?? '127.0.0.1',()=>console.log(`Firefly Probe 0.2.13 listening on ${process.env.HOST ?? '127.0.0.1'}:${process.env.PORT ?? 8080}`));
   let stopping=false;for(const sig of ['SIGINT','SIGTERM']) process.on(sig,async()=>{if(stopping)return;stopping=true;await app.close();process.exit(0);});
 }

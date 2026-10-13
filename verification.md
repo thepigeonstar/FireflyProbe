@@ -153,3 +153,7 @@ Browser verifies editable country codes/names/auto and settings plugin navigatio
 ## v0.2.12
 
 57 Node tests pass. Lifecycle fixtures verify new/legacy/default/explicit directories and uninstall stop/export/remove ordering. Backup-export failure prevents container removal. ShellCheck passes for install/uninstall scripts. Real VPS uninstall was not executed.
+
+## v0.2.13
+
+63 Node tests pass, including trusted proxy chains, separate visitor limits, gradual account delays, Telegram migration/masking/clearing and encrypted cross-VPS restore. Plugin tests cover capability checks, CSRF, sanitized monitoring, one-use approvals tied to request/session, revocation and code-update invalidation. Chrome confirms opaque iframe isolation from parent/cookies/storage/direct fetch, blocked settings access, rejected and accepted mutations, and desktop/mobile install-button separation. History and country-navigation browser regressions pass. ShellCheck passes. No real production SSH deployments or Google uploads performed for this release.

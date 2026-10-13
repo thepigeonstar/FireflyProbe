@@ -11,6 +11,7 @@ test('默认新目录，兼容旧目录；显式目录和已有新目录优先',
  try{const source=readFileSync(new URL('../install-master.sh',import.meta.url),'utf8'),fn=/select_install_target\(\) \{[\s\S]*?\n\}/.exec(source)[0];assert.ok(source.includes("target='/root/FireflyProbe'"));
  const run=explicit=>{const r=spawnSync(bash,['-c',fn+'\nselect_install_target "$1" "$2" "$3"','test',pathForShell(preferred),pathForShell(legacy),String(explicit)],{encoding:'utf8'});assert.equal(r.status,0,r.stderr);return r.stdout.trim();};
  assert.equal(run(false),pathForShell(preferred));writeFileSync(join(legacy,'.env'),'');writeFileSync(join(legacy,'compose.yaml'),'');assert.equal(run(false),pathForShell(legacy));assert.equal(run(true),pathForShell(preferred));writeFileSync(join(preferred,'.env'),'');writeFileSync(join(preferred,'compose.yaml'),'');assert.equal(run(false),pathForShell(preferred));
+ const normalize=source.split('\n').find(line=>line.includes('expected_project=$(')),normalized=spawnSync(bash,['-c','target=/root/FireflyProbe\n'+normalize+'\nprintf "%s" "$expected_project"'],{encoding:'utf8'});assert.equal(normalized.status,0);assert.equal(normalized.stdout,'fireflyprobe');
  }finally{rmSync(dir,{recursive:true,force:true});}
 });
 test('主控卸载先停止和备份再移除，导出失败不移除；保留卷且不影响其他项目',()=>{

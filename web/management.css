@@ -12,3 +12,7 @@
 .sidebar-home{display:block;margin-bottom:10px;font-size:12px;color:var(--muted)}.sidebar-home:hover{color:var(--blue)}.ssh-config-test{display:flex;align-items:center;gap:14px;margin-top:18px;font-size:12px;color:var(--muted)}.plugin-list{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:16px;margin-bottom:20px}.plugin-card .secondary{margin-top:12px}
 
 .guide-doc-links,.remote-auth-actions{display:flex;gap:12px;flex-wrap:wrap;margin:16px 0}.remote-config-advanced{margin-top:20px}#google-authorization-token{width:100%;border:1px solid var(--line);border-radius:7px;background:var(--card);color:var(--ink);padding:12px;font:12px monospace;resize:vertical}#remote-backup-form>label{margin:16px 0}
+
+.plugin-frame{width:100%;height:360px;border:1px solid var(--line);border-radius:10px;background:var(--card)}.plugin-permissions{margin:16px 0}.plugin-permissions .check{margin:10px 0}
+
+.install-options{display:flex;align-items:stretch;gap:20px;flex-wrap:wrap;margin:20px 0}.install-options>button{min-height:44px;padding:12px 20px;flex:1}.server-actions{gap:16px}@media(max-width:600px){.install-options{flex-direction:column;gap:16px}.install-options>button{width:100%;flex:none}}
