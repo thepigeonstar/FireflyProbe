@@ -155,6 +155,11 @@ if grep -q "from './plugins.mjs'" "$temporary/source/server/main.mjs"; then
     [[ -f "$temporary/source/$required" ]] || { echo "仓库缺少 $required，请上传完整项目。" >&2; exit 1; }
   done
 fi
+if grep -q "from './traffic-history.mjs'" "$temporary/source/server/main.mjs"; then
+  for required in server/traffic-history.mjs web/traffic-history.js; do
+    [[ -f "$temporary/source/$required" ]] || { echo "Repository missing $required" >&2; exit 1; }
+  done
+fi
 if grep -q "from './remote-backup.mjs'" "$temporary/source/server/main.mjs"; then
   for required in server/remote-backup.mjs server/backup-archive.mjs web/remote-backup.js; do
     [[ -f "$temporary/source/$required" ]] || { echo "仓库缺少 $required，请上传完整项目。" >&2; exit 1; }

@@ -145,3 +145,7 @@ Node 35 项通过；包含真实本地 SSH2 协议、指纹确认、凭据加密
 ## v0.2.10
 
 Browser verifies editable country codes/names/auto and settings plugin navigation. Password rotation test verifies old and new backups only decrypt with their creation-time password.
+
+## v0.2.11
+
+55 Node tests and Chrome browser checks pass: daily/monthly aggregation, administrator-only history, retention validation, upload-before-prune, cleanup failures, and settings persistence. Remote cleanup uses mocked rclone; no real Google Drive files were deleted. Reporter uninstaller passes shell syntax and ShellCheck; not executed on a real VPS.
