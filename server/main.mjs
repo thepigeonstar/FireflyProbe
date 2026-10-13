@@ -13,6 +13,7 @@ import { createBackups, backupName, receiveRestore } from './backups.mjs';
 import { createVault, createSSH, sshFields } from './ssh.mjs';
 import {notificationSelected,validateTargets} from './notification-targets.mjs';
 import {networkChart} from './network-chart.mjs';
+import {loadPlugins} from './plugins.mjs';
 import {createAccount,validatePaths} from './account.mjs';
 
 export function publicIP(value){const ip=String(value||'').replace(/^::ffff:/,'');if(!isIP(ip))return '';if(isIP(ip)===4){const [a,b]=ip.split('.').map(Number);if(a===0||a===10||a===127||a>=224||a===169&&b===254||a===172&&b>=16&&b<=31||a===192&&b===168||a===100&&b>=64&&b<=127||a===198&&(b===18||b===19))return '';}else if(!/^[23][0-9a-f]{3}:/i.test(ip))return '';return ip;}
@@ -21,7 +22,7 @@ const sha = s => createHash('sha256').update(s).digest('hex');
 const token = () => randomBytes(32).toString('hex');
 const defaults = { timezone: 'Asia/Shanghai', interval: 5, offline_seconds: 45, keep_days: 180, trend_days: 7, report_enabled: false, report_hour: 8, report_minute: 0, thresholds: [80, 90, 95], telegram_token: '', telegram_chat: '' };
 const staticDir = fileURLToPath(new URL('../web/', import.meta.url));
-const publicFiles = new Map(['index.html', 'app.js', 'features.js','style.css','features.css','management.js','management.css','background.js','background.css','theme.js','theme.css', 'firefly.svg','public.html','public.js'].map(f => [f, readFileSync(join(staticDir, f))]));
+const publicFiles = new Map(['index.html', 'app.js', 'features.js','style.css','features.css','management.js','management.css','background.js','background.css','theme.js','theme.css', 'firefly.svg','public.html','public.js','plugin-host.js'].map(f => [f, readFileSync(join(staticDir, f))]));
 const downloads = new Map([
   ['/install-agent.sh', fileURLToPath(new URL('../agent/bootstrap.sh', import.meta.url))],
   ['/downloads/install.sh', fileURLToPath(new URL('../agent/install.sh', import.meta.url))],
@@ -92,17 +93,19 @@ export async function createApp(options = {}) {
   if (secure && !publicURL.startsWith('https://')) throw new Error('安全 Cookie 模式需要 HTTPS PUBLIC_URL');
   let appOrigin = publicURL ? new URL(publicURL).origin : '';
   const vault=createVault(dirname(dbPath));
+  const plugins=loadPlugins(options.pluginDirectory??join(staticDir,'plugins'));
   const ssh=createSSH({db,vault,publicURL,bootstrap:readFileSync(fileURLToPath(new URL('../agent/bootstrap.sh',import.meta.url)),'utf8'),ClientClass:options.sshClient});
   function configuredNode(input,old={},id=old.id) {
     const fields={...nodeFields({...old,...input}),...sshFields(input,old)};
     if(input.ssh_password!==undefined){if(typeof input.ssh_password!=='string'||input.ssh_password.length>1024||input.ssh_password.includes('\0'))fail(400,'SSH 密码格式无效');if(input.ssh_password)fields.ssh_password=vault.seal(input.ssh_password,id);}
+    if(input.country_override!==undefined){const code=input.country_override;if(typeof code!=='string'||code!==''&&(!/^[A-Z]{2}$/.test(code)||!publicFiles.has('flags/'+code.toLowerCase()+'.svg')))fail(400,'请选择有效国家，或自动识别');fields.country_override=code;}
     if(input.ssh_clear===true)fields.ssh_password='';
     if(fields.ssh_host!==(old.ssh_host??'')||fields.ssh_port!==(old.ssh_port??22))fields.ssh_fingerprint='';
     return fields;
   }
   const now = () => Math.floor(Date.now()/1000);
   const geoPending=new Map(),geoAttempts=new Map();let geoActive=0;
-  function countryQueue(id,ip){if(!ip||closed||options.disableExternal)return;const n=db.prepare('SELECT country_ip,country_code FROM nodes WHERE id=?').get(id);if(!n||n.country_ip===ip&&n.country_code)return;const prior=geoAttempts.get(id);if(prior&&prior.ip===ip&&Date.now()-prior.time<3600000)return;geoAttempts.set(id,{ip,time:Date.now()});geoPending.set(id,ip);countryDrain();}
+  function countryQueue(id,ip){if(!ip||closed||options.disableExternal)return;const n=db.prepare('SELECT country_ip,country_code,country_override FROM nodes WHERE id=?').get(id);if(!n||n.country_override||n.country_ip===ip&&n.country_code)return;const prior=geoAttempts.get(id);if(prior&&prior.ip===ip&&Date.now()-prior.time<3600000)return;geoAttempts.set(id,{ip,time:Date.now()});geoPending.set(id,ip);countryDrain();}
   function countryDrain(){while(!closed&&geoActive<2&&geoPending.size){const [id,ip]=geoPending.entries().next().value;geoPending.delete(id);geoActive++;const epoch=restoreEpoch;(async()=>{try{const data=options.countryLookup?await options.countryLookup(ip):await fetch('https://api.country.is/'+encodeURIComponent(ip),{signal:AbortSignal.timeout(4000)}).then(r=>{if(!r.ok)throw Error('lookup');return r.json();});if(!closed&&!restoring&&epoch===restoreEpoch&&/^[A-Z]{2}$/.test(data.country||'')&&publicFiles.has('flags/'+data.country.toLowerCase()+'.svg')){db.prepare('UPDATE nodes SET country_code=?,country_ip=? WHERE id=?').run(data.country,ip,id);publicCache=null;}}catch{}finally{geoActive--;countryDrain();}})();}}
   const getNodes = () => db.prepare('SELECT * FROM nodes ORDER BY sort,name').all();
   const safeSettings = () => ({ ...settings,admin_user:account.username, brand_logo:undefined, brand_favicon:undefined, telegram_token: undefined, telegram_configured: Boolean(settings.telegram_token && settings.telegram_chat) });
@@ -126,7 +129,7 @@ export async function createApp(options = {}) {
       const { token_hash,ssh_password,agent_secret,country_ip, ...safe } = n;
       safe.ssh_configured=Boolean(ssh_password);
       safe.ssh_job=ssh.recent(n.id);
-      return { ...safe, last_version:live?.metrics?.version??n.last_version, last_seen: seen, status, metrics: status === 'online' ? live?.metrics ?? null : null, traffic: dailyTotals(db,n,today), cost:nodeCost(n,rates), expired: Boolean(n.expires && n.expires < today),maintenance:n.maintenance_until>now() };
+      return { ...safe,country_code:safe.country_override||safe.country_code, last_version:live?.metrics?.version??n.last_version, last_seen: seen, status, metrics: status === 'online' ? live?.metrics ?? null : null, traffic: dailyTotals(db,n,today), cost:nodeCost(n,rates), expired: Boolean(n.expires && n.expires < today),maintenance:n.maintenance_until>now() };
     });
   };
   const publicHistoryCache=new Map();
@@ -342,13 +345,17 @@ export async function createApp(options = {}) {
       if(method==='POST'&&path.endsWith('/api/login'))fail(404,'接口不存在');
       if(path.startsWith('/api/')) {
         const session=auth(req,method!=='GET');
+        if(path==='/api/ssh/draft/probe'&&method==='POST')return send(res,200,await ssh.draftProbe(await body(req),session.cookie));
+        if(path==='/api/ssh/draft/test'&&method==='POST')return send(res,200,await ssh.draftTest(await body(req),session.cookie));
+        if(path==='/api/plugins'&&method==='GET')return send(res,200,plugins.list());
+        const pluginRoute=/^\/api\/plugins\/([a-z][a-z0-9-]{0,39})\/module$/.exec(path);if(pluginRoute&&method==='GET'){const source=plugins.source(pluginRoute[1]);if(source===undefined)fail(404,'插件不存在');res.writeHead(200,{'Content-Type':'text/javascript; charset=utf-8','Cache-Control':'no-store'});return res.end(source);}
         if(path==='/api/account'&&method==='POST'){const result=await account.change(await body(req));sessions.clear();res.setHeader('Set-Cookie','lp_session=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0');return send(res,200,{...result,redirect_admin:settings.admin_path,message:'账号已更新，请重新登录'});}
         if(path==='/api/session'&&method==='GET') return send(res,200,{csrf:session.csrf,username:account.username});
         if(path==='/api/logout'&&method==='POST') {sessions.delete(session.cookie);res.setHeader('Set-Cookie','lp_session=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0');return send(res,200,{ok:true});}
         const sshRoute=/^\/api\/nodes\/([a-f0-9-]{36})\/ssh\/(probe|trust|test|deploy)$/.exec(path);
         if(sshRoute&&method==='POST'){const [unused,id,action]=sshRoute;if(action==='probe')return send(res,200,await ssh.probe(id));if(action==='trust'){const input=await body(req);ssh.trust(id,input.fingerprint);return send(res,200,{ok:true});}if(action==='test')return send(res,200,await ssh.test(id));return send(res,202,ssh.deploy(id));}
         const jobRoute=/^\/api\/ssh\/jobs\/([a-f0-9-]{36})$/.exec(path);if(jobRoute&&method==='GET')return send(res,200,ssh.status(jobRoute[1]));
-        if(path==='/api/nodes'&&method==='GET') {const rates=fx.read();const {rates:unused,...fxInfo}=rates;return send(res,200,{nodes:snapshot(),settings:safeSettings(),cost_summary:costSummary(getNodes(),rates),fx_info:fxInfo,server_time:now(),version:'0.2.6',agent_version:'0.2.0'});}
+        if(path==='/api/nodes'&&method==='GET') {const rates=fx.read();const {rates:unused,...fxInfo}=rates;return send(res,200,{nodes:snapshot(),settings:safeSettings(),cost_summary:costSummary(getNodes(),rates),fx_info:fxInfo,server_time:now(),version:'0.2.7',agent_version:'0.2.0'});}
         const adminNetwork=/^\/api\/nodes\/([a-f0-9-]{36})\/network-history$/.exec(path);if(adminNetwork&&method==='GET')return send(res,200,publicHistory(adminNetwork[1],true));
         if(path==='/api/network/history'&&method==='GET')return send(res,200,publicHistory('network',true));
         if(path==='/api/costs'&&method==='GET')return send(res,200,{...costSummary(getNodes(),fx.read()),fx:fx.read()});
@@ -421,6 +428,6 @@ export async function createApp(options = {}) {
 function formatBytes(bytes) {const units=['B','KiB','MiB','GiB','TiB'];let i=0;while(bytes>=1024&&i<4){bytes/=1024;i++;}return bytes.toFixed(1)+' '+units[i];}
 if(process.argv[1] && import.meta.url===pathToFileURL(resolve(process.argv[1])).href) {
   const app=await createApp();
-  app.server.listen(Number(process.env.PORT ?? 8080),process.env.HOST ?? '127.0.0.1',()=>console.log(`Firefly Probe 0.2.6 listening on ${process.env.HOST ?? '127.0.0.1'}:${process.env.PORT ?? 8080}`));
+  app.server.listen(Number(process.env.PORT ?? 8080),process.env.HOST ?? '127.0.0.1',()=>console.log(`Firefly Probe 0.2.7 listening on ${process.env.HOST ?? '127.0.0.1'}:${process.env.PORT ?? 8080}`));
   let stopping=false;for(const sig of ['SIGINT','SIGTERM']) process.on(sig,async()=>{if(stopping)return;stopping=true;await app.close();process.exit(0);});
 }

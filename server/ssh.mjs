@@ -25,7 +25,7 @@ export function sshFields(input,old={}) {
   return {ssh_host:host,ssh_port:port,ssh_user:user};
 }
 export function createSSH({db,vault,publicURL,bootstrap,ClientClass=Client}) {
-  const jobs=new Map(),probes=new Map(),connections=new Set();let stopped=false;
+  const drafts=new Map(),jobs=new Map(),probes=new Map(),connections=new Set();let stopped=false;
   const node=id=>{const n=db.prepare('SELECT * FROM nodes WHERE id=?').get(id);if(!n)throw error(404,'服务器不存在');return n;};
   const config=n=>{if(!n.ssh_host)throw error(400,'请先保存服务器 IP 和 SSH 配置');return {host:n.ssh_host,port:n.ssh_port,username:n.ssh_user,readyTimeout:15000,keepaliveInterval:10000,keepaliveCountMax:3};};
   const friendly=e=>/authentication/i.test(e.message)?'SSH 登录失败，请检查用户名、密码和服务器密码登录设置':/host|fingerprint/i.test(e.message)?'SSH 指纹不匹配，请重新测试并核对服务器身份':/timed out|timeout/i.test(e.message)?'SSH 连接或部署超时，请检查网络、防火墙和 SSH 端口':/ECONNREFUSED/.test(e.message)?'SSH 端口拒绝连接':/ENETUNREACH|EHOSTUNREACH/.test(e.message)?'主控无法访问该服务器':'SSH 操作失败，请检查服务器 SSH 服务与网络';
@@ -51,6 +51,16 @@ export function createSSH({db,vault,publicURL,bootstrap,ClientClass=Client}) {
   const busy=id=>[...jobs.values()].some(j=>j.node_id===id&&j.status==='running');
   return {
     busy,
+    async draftProbe(input,owner){
+      const old=input.id?node(input.id):{},fields=sshFields(input,old),id=randomUUID();
+      if(typeof input.ssh_password!=='string'||input.ssh_password.length>1024||input.ssh_password.includes('\0'))throw error(400,'SSH 密码格式无效');
+      const password=input.ssh_clear?'':input.ssh_password||(old.ssh_password?vault.open(old.ssh_password,old.id):'');if(!password)throw error(400,'请填写 SSH 密码');
+      const n={id,...fields,ssh_password:vault.seal(password,id)},key=await connect(n,true);
+      for(const [key,value] of drafts)if(Date.now()-value.time>120000)drafts.delete(key);if(drafts.size>=100)drafts.delete(drafts.keys().next().value);
+      drafts.set(id,{owner,n:{...n,ssh_fingerprint:key},time:Date.now()});
+      return {challenge:id,fingerprint:key,trusted:old.ssh_host===fields.ssh_host&&old.ssh_port===fields.ssh_port&&old.ssh_fingerprint===key};
+    },
+    async draftTest(input,owner){const draft=drafts.get(input.challenge);if(!draft||draft.owner!==owner||Date.now()-draft.time>120000||draft.n.ssh_fingerprint!==input.fingerprint)throw error(409,'测试指纹已过期，请重新测试');drafts.delete(input.challenge);const c=await connect(draft.n);let output='';try{const code=await exec(c,'id -u','',30000,line=>output+=line);if(code!==0)throw error(502,'SSH 已连接，但无法执行检测命令');return {ok:true,root:output.trim()==='0',message:output.trim()==='0'?'SSH 连接成功，可安装/更新；配置尚未保存':'SSH 连接成功；安装/更新需要 root 或免密 sudo，配置尚未保存'};}finally{c.end();}},
     recent(id){const job=[...jobs.values()].filter(j=>j.node_id===id).at(-1);return job?{id:job.id,status:job.status,created:job.created}:null;},
     async probe(id){const n=node(id),key=await connect(n,true);probes.set(id,{key,host:n.ssh_host,port:n.ssh_port,time:Date.now()});return {fingerprint:key,trusted:key===n.ssh_fingerprint};},
     trust(id,key){const n=node(id),p=probes.get(id);if(!p||Date.now()-p.time>120000||p.host!==n.ssh_host||p.port!==n.ssh_port||p.key!==key)throw error(409,'指纹确认已过期，请重新测试连接');db.prepare('UPDATE nodes SET ssh_fingerprint=? WHERE id=?').run(key,id);probes.delete(id);},
@@ -71,7 +81,7 @@ export function createSSH({db,vault,publicURL,bootstrap,ClientClass=Client}) {
       return status(job.id);
     },
     status,
-    cancelAll(){stopped=true;for(const c of connections)c.destroy();for(const job of jobs.values())if(job.status==='running'){job.status='failed';job.finished=Math.floor(Date.now()/1000);job.log+='主控停止或恢复备份，任务已中止；请核对受控端状态。\n';}},
-    reset(){probes.clear();stopped=false;}
+    cancelAll(){drafts.clear();stopped=true;for(const c of connections)c.destroy();for(const job of jobs.values())if(job.status==='running'){job.status='failed';job.finished=Math.floor(Date.now()/1000);job.log+='主控停止或恢复备份，任务已中止；请核对受控端状态。\n';}},
+    reset(){drafts.clear();probes.clear();stopped=false;}
   };
 }

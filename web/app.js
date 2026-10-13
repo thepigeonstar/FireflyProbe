@@ -1,7 +1,7 @@
 'use strict';
 const $ = s => document.querySelector(s);
 const state = { csrf:'', nodes:[], settings:{}, page:'overview', tokenConfig:null, historyId:null, refreshing:false };
-let currentBrand={brand_name:'萤火',brand_english:'Firefly Probe',brand_logo:'',brand_favicon:'',login_subtitle:'服务器状态与流量，一个地方看清。'};
+let currentBrand={brand_name:'萤火',brand_english:'Firefly Probe',brand_logo:'',brand_favicon:'',login_subtitle:'服务器状态与流量，一个地方看清。',public_title:'服务器状态',overview_title:'每一台服务器，尽在掌握'};
 let brandDraft={logo:null,favicon:null};
 function applyBrand(values){
   for(const key of Object.keys(currentBrand))if(values[key]!==undefined)currentBrand[key]=values[key];
@@ -10,6 +10,7 @@ function applyBrand(values){
   document.querySelectorAll('[data-brand-version]').forEach(el=>el.textContent=currentBrand.brand_english||currentBrand.brand_name);
   document.querySelectorAll('[data-brand-logo]').forEach(el=>el.src=currentBrand.brand_logo||'/firefly.svg');
   document.querySelectorAll('[data-login-subtitle]').forEach(el=>el.textContent=currentBrand.login_subtitle);
+  $('[data-overview-title]').textContent=currentBrand.overview_title;$('#sidebar-home').href=values.public_path||state.settings.public_path||'/';
   document.title=[currentBrand.brand_name,currentBrand.brand_english].filter(Boolean).join(' · ');
   $('#brand-favicon').href=currentBrand.brand_favicon||currentBrand.brand_logo||'/firefly.svg';
 }

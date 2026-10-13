@@ -30,7 +30,7 @@ test('品牌设置权限、公开登录品牌、通知名称和重启持久化',
     const session=await login.json(),cookie=login.headers.get('set-cookie').split(';')[0];
     const headers={'Content-Type':'application/json',Cookie:cookie,'X-CSRF-Token':session.csrf};
     r=await fetch(base+'/api/settings',{method:'PUT',headers,body:JSON.stringify({brand_name:'萝卜',brand_english:'Radish Probe',brand_logo:pixel,telegram_token:'123456789:TEST_TOKEN_NOT_REAL',telegram_chat:'12345'})});assert.equal(r.status,200);
-    const brand=await(await fetch(base+'/api/brand')).json();assert.deepEqual(Object.keys(brand).sort(),['brand_english','brand_favicon','brand_logo','brand_name','login_subtitle']);assert.equal(brand.brand_logo,pixel);
+    const brand=await(await fetch(base+'/api/brand')).json();assert.deepEqual(Object.keys(brand).sort(),['brand_english','brand_favicon','brand_logo','brand_name','login_subtitle','overview_title','public_title']);assert.equal(brand.brand_logo,pixel);
     const snapshot=await(await fetch(base+'/api/nodes',{headers})).json();assert.equal(snapshot.settings.brand_logo,undefined);
     r=await fetch(base+'/api/notifications/test',{method:'POST',headers,body:'{}'});assert.equal(r.status,200);assert.match(app.db.prepare('SELECT message FROM outbox').get().message,/萝卜 通知测试成功/);
     await app.close();app=await createApp(opts);base=await listen();

@@ -28,6 +28,14 @@ test('真实 SSH 协议：指纹确认、密码验证、部署日志脱敏、权
   try{
     assert.equal((await call('/api/nodes/00000000-0000-0000-0000-000000000000/ssh/probe','POST',{})).status,401);
     const login=await call('/admin/api/login','POST',{username:'admin',password:'ssh-admin-password-2026'});headers={...headers,Cookie:login.response.headers.get('set-cookie').split(';')[0],'X-CSRF-Token':login.body.csrf};
+    await t.test('未保存 SSH 草稿可测试，指纹确认绑定会话且一次有效，不写入服务器资料',async()=>{
+      const input={ssh_host:'127.0.0.1',ssh_port:sshServer.address().port,ssh_user:'root',ssh_password:password},before=app.db.prepare('SELECT COUNT(*) n FROM nodes').get().n;
+      const probe=await call('/api/ssh/draft/probe','POST',input);assert.equal(probe.status,200);assert.equal(probe.body.trusted,false);assert.ok(!JSON.stringify(probe.body).includes(password));
+      const proof={challenge:probe.body.challenge,fingerprint:probe.body.fingerprint};assert.equal((await call('/api/ssh/draft/test','POST',{...proof,fingerprint:'fake'})).status,409);
+      const original=headers,other=await call('/admin/api/login','POST',{username:'admin',password:'ssh-admin-password-2026'});headers={...original,Cookie:other.response.headers.get('set-cookie').split(';')[0],'X-CSRF-Token':other.body.csrf};assert.equal((await call('/api/ssh/draft/test','POST',proof)).status,409);headers=original;
+      const result=await call('/api/ssh/draft/test','POST',proof);assert.equal(result.status,200);assert.equal(result.body.root,true);assert.equal((await call('/api/ssh/draft/test','POST',proof)).status,409);assert.equal(app.db.prepare('SELECT COUNT(*) n FROM nodes').get().n,before);
+      const wrong=await call('/api/ssh/draft/probe','POST',{...input,ssh_password:'incorrect'});assert.equal((await call('/api/ssh/draft/test','POST',{challenge:wrong.body.challenge,fingerprint:wrong.body.fingerprint})).status,502);
+    });
     a=(await call('/api/nodes','POST',{name:'SSH test',ssh_host:'127.0.0.1',ssh_port:sshServer.address().port,ssh_user:'root',ssh_password:password})).body;
     await t.test('配置与公开接口不回显密码或采集密钥，加密数据不会包含明文',async()=>{
       const saved=app.db.prepare('SELECT * FROM nodes WHERE id=?').get(a.id);assert.notEqual(saved.ssh_password,password);assert.notEqual(saved.agent_secret,a.token);assert.equal(createVault(dir).open(saved.ssh_password,a.id),password);
