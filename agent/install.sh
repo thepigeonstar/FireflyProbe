@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
+export PYTHONUTF8=1 PYTHONIOENCODING=utf-8
 umask 077
 phase='初始化'
 report_install_error() {
@@ -51,7 +52,16 @@ if [[ "$ID" == alpine ]]; then
   fi
   apk add --no-cache bash vnstat vnstat-openrc python3 ca-certificates iproute2 tzdata coreutils
 else
-  apt-get update
+  if apt-get update; then
+    :
+  else
+    status=$?
+    echo '软件源刷新失败，请先修复上方报错的软件源，再重试安装。' >&2
+    if [[ "$ID" == debian && "$VERSION_ID" == 11 ]]; then
+      echo '若 bullseye-backports 返回 404：该源已退役，请备份并禁用对应 backports 条目；保留 bullseye、bullseye-updates 和 bullseye-security。' >&2
+    fi
+    exit "$status"
+  fi
   DEBIAN_FRONTEND=noninteractive apt-get install -y vnstat python3 ca-certificates iproute2 tzdata
 fi
 phase='检查 vnStat 版本和配置选项'

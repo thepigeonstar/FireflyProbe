@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
+export PYTHONUTF8=1 PYTHONIOENCODING=utf-8
 umask 077
 phase='初始化'
 # Do not log BASH_COMMAND: it can contain a node token or credentials.

@@ -1,6 +1,7 @@
 #!/bin/sh
 # Portable launcher: Alpine's default shell does not include Bash.
 set -eu
+export PYTHONUTF8=1 PYTHONIOENCODING=utf-8
 umask 077
 [ "$(id -u)" -eq 0 ] || { echo '请使用 root 安装采集端。' >&2; exit 1; }
 server=''
