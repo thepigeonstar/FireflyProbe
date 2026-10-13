@@ -45,7 +45,11 @@ cat > "$scratch/mock/systemctl" <<'MOCK'
 #!/usr/bin/env bash
 printf 'systemctl %s\n' "$*" >> "$TEST_TRACE"
 MOCK
-chmod +x "$scratch/mock/"*
+# Only change files created by this test. Core commands above are symlinks to
+# system binaries and must remain untouched, including on non-root CI runners.
+for mock_command in docker-template apt-get dpkg dpkg-query curl install systemctl; do
+  chmod +x "$scratch/mock/$mock_command"
+done
 printf 'set -euo pipefail\ntemporary=%q\n' "$scratch/files" > "$scratch/runner"
 printf 'ID=debian\nVERSION_ID=12\nVERSION_CODENAME=bookworm\n' > "$scratch/os-release"
 sed -n '/^ensure_docker() {/,/^}/p' "$project/install-master.sh" | sed "s|/etc/os-release|$scratch/os-release|g" >> "$scratch/runner"
