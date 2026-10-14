@@ -201,3 +201,10 @@ Installer locale hotfix: braced variables adjacent to Chinese punctuation in tim
 ## v0.2.22
 
 80 Node tests pass. Sequential queue tests assert only one running deployment, live logs, advancing after failure and final failed-node identification. Forwarding tests cover installed-state persistence and resume without downloader/config regeneration. Chrome verifies installation/update labels, stop-to-resume toggling, the automatic batch dialog, failure summary/names and existing edit/history/order/navigation. Shell syntax/ShellCheck pass. Alpine entry tests cover successful setup and curl exit 35 preserving the error, never executing an incomplete script and keeping tokens out of diagnostics. Downloads now use HTTP/1.1 and bounded curl retries without relaxing TLS. The canceled overview status filter is absent; original app.js is preserved. Actual Alpine network reset root cause remains unverified. Agent binaries/version remain 0.2.2.
+
+## v0.2.23（2026-10-14）
+
+- Node 测试 82 项通过，新增所有服务器转发日汇总、上海时区跨日和夏令时结束日历日期验证。
+- 今日、昨日只统计对应日记录，停止规则保留已采集流量；旧月数据不冒充日流量。
+- 主控版本 0.2.23，采集端保持 0.2.2，本次无须更新采集端。
+- Chrome 实测图标、悬停提示、删除最右、服务运行文案、全服务器日汇总及切换服务器不改变汇总；安装/更新、启动/停止、日志、编辑与每日历史回归通过，无页面脚本错误。未连接生产服务器。

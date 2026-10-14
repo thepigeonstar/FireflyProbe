@@ -139,6 +139,11 @@ export function createForwarding(db,ssh,timezone=()=> 'Asia/Shanghai'){
  function traffic(r){const month=dayKey(new Date(),timezone()).slice(0,7),saved=db.prepare('SELECT value FROM settings WHERE key=?').get(monthKey(r.id,month));return {month,...(saved?JSON.parse(saved.value):{rx:0,tx:0}),sampled:r.counter?.sampled??0,available:r.metrics_available??false};}
  function history(id){if(!records().some(r=>r.id===id))fail(404,'规则不存在');return db.prepare("SELECT key,value FROM settings WHERE key LIKE ? ORDER BY key DESC LIMIT 24").all('forward_month:'+id+':%').map(row=>({month:row.key.slice(-7),...JSON.parse(row.value)}));}
  function dailyHistory(id,month){if(!/^\d{4}-(0[1-9]|1[0-2])$/.test(month))fail(400,'月份格式无效');const months=history(id),total=months.find(m=>m.month===month)??{rx:0,tx:0};const days=db.prepare("SELECT key,value FROM settings WHERE key LIKE ? ORDER BY key DESC").all('forward_day:'+id+':'+month+'-%').map(row=>({date:row.key.slice(-10),...JSON.parse(row.value)}));return {month,total,days,unassigned:{rx:Math.max(0,total.rx-days.reduce((sum,d)=>sum+d.rx,0)),tx:Math.max(0,total.tx-days.reduce((sum,d)=>sum+d.tx,0))}};}
+ function summary(at=new Date()){
+  const zone=timezone(),today=dayKey(at,zone),yesterday=new Date(Date.parse(today+'T12:00:00Z')-86400000).toISOString().slice(0,10),rules=records();
+  const total=date=>{const sum={date,rx:0,tx:0};for(const r of rules){const row=db.prepare('SELECT value FROM settings WHERE key=?').get('forward_day:'+r.id+':'+date);if(row){const d=JSON.parse(row.value);sum.rx+=d.rx;sum.tx+=d.tx;}}return {...sum,total:sum.rx+sum.tx};};
+  return {timezone:zone,rule_count:rules.length,today:total(today),yesterday:total(yesterday)};
+ }
  function ingest(nodeID,samples){if(samples===undefined)return;if(!Array.isArray(samples)||samples.length>200)fail(400,'转发统计格式无效');for(const s of samples){
   if(!s||typeof s.id!=='string'||typeof s.epoch!=='string'||!/^[a-f0-9-]{36}$/.test(s.epoch)||!Number.isInteger(s.sampled)||s.sampled<1||s.sampled>Date.now()/1000+300||typeof s.available!=='boolean')fail(400,'转发统计样本无效');
   const stored=db.prepare('SELECT value FROM settings WHERE key=?').get(key(s.id));if(!stored)continue;const r=JSON.parse(stored.value);if(r.node_id!==nodeID||r.pending_edit)continue;
@@ -166,7 +171,7 @@ export function createForwarding(db,ssh,timezone=()=> 'Asia/Shanghai'){
 
  return {
   list(){return records().map(record=>reconcile(record)).filter(Boolean).sort((a,b)=>(a.sort??a.created??0)-(b.sort??b.created??0)||a.id.localeCompare(b.id)).map(r=>({...r,installed:installed(r),traffic:traffic(r)}));},
-  ingest,history,dailyHistory,update,
+  ingest,history,dailyHistory,update,summary,
   reorder(nodeID,ids){if(typeof nodeID!=='string'||!db.prepare('SELECT id FROM nodes WHERE id=?').get(nodeID))fail(404,'服务器不存在');const rules=records().filter(r=>r.node_id===nodeID);if(!Array.isArray(ids)||ids.length!==rules.length||new Set(ids).size!==ids.length||ids.some(id=>!rules.some(r=>r.id===id)))fail(400,'排序必须包含该服务器的全部规则，且不能重复');db.exec('BEGIN IMMEDIATE');try{ids.forEach((id,index)=>save({...rules.find(r=>r.id===id),sort:index}));db.exec('COMMIT');}catch(e){db.exec('ROLLBACK');throw e;}return {ok:true};},
   hasNode(id){return records().map(record=>reconcile(record)).filter(Boolean).some(r=>r.node_id===id);},
   add(input){if(!input||typeof input.node_id!=='string'||!/^[a-f0-9-]{36}$/.test(input.node_id))fail(400,'请选择有效服务器');if(records().length>=200)fail(400,'最多 200 条规则');const node=db.prepare('SELECT * FROM nodes WHERE id=?').get(input.node_id);if(!node)fail(404,'服务器不存在');if(!node.ssh_host||!node.ssh_password||!node.ssh_fingerprint)fail(400,'请先配置 SSH、测试连接并确认指纹');const fields=forwardingFields(input);collision(fields,node.id);const r={id:randomUUID(),node_id:node.id,...fields,sort:Math.max(-1,...records().filter(r=>r.node_id===node.id).map(r=>r.sort??r.created??0))+1,state:'not_deployed',installed:false,created:Math.floor(Date.now()/1000)};save(r);return r;},
