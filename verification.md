@@ -183,3 +183,7 @@ GOST download hotfix: GitHub run 38530192131 passed Node/Go, Docker and Alpine t
 ## v0.2.18
 
 76 Node tests pass; Go tests and vet pass. Tests cover monthly byte deltas, duplicate samples, rule/node ownership, process epochs, counter resets, error recovery, Shanghai month boundaries and bounded two-agent update queues with skips. Chrome verifies server A/B rule filtering, empty 80/443 port hints, friendly live log dialogs, green/red status, monthly history, the legacy agent system hint and batch UI results. Linux amd64/arm64 agent 0.2.2 binaries and checksums are rebuilt. Existing CI run 38531272164 passed real GOST TCP/UDP tests and Alpine installation; the new GOST Metrics byte-counter CI test is not yet run locally. No real VPS modifications were performed.
+
+## v0.2.19
+
+All 77 Node tests pass. Daily tests cover Shanghai midnight, duplicate samples, preserving pre-upgrade monthly totals, identifying unassigned historic bytes, valid month queries and node/rule ownership. Chrome verifies separate address/traffic columns, removal of the monthly prefix, a month selector and daily traffic history, alongside existing rule filters, logs, health and bulk update UI. Agent remains 0.2.2 and binaries are unchanged. Historical daily detail cannot be reconstructed from previous monthly-only records.
