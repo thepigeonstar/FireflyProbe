@@ -40,7 +40,14 @@ printf '%s\n' "$server" | grep -Eq '^https://[a-zA-Z0-9.-]+(:[0-9]+)?/?$' || { e
 server=${server%/}
 temporary=$(mktemp -d)
 trap 'rm -rf -- "$temporary"' EXIT
-curl --proto '=https' --tlsv1.2 -fsS --connect-timeout 15 --max-time 60 "$server/downloads/bootstrap.sh" -o "$temporary/bootstrap.sh"
+echo '正在通过 HTTPS 从主控下载安装脚本（连接失败会有限重试）…'
+if curl --proto '=https' --tlsv1.2 --http1.1 --retry 3 --retry-all-errors --retry-delay 2 --retry-max-time 180 -fsS --connect-timeout 15 --max-time 60 "$server/downloads/bootstrap.sh" -o "$temporary/bootstrap.sh"; then
+  :
+else
+  status=$?
+  echo '下载安装脚本失败：请检查受控服务器到主控的 HTTPS 网络、DNS、代理和防火墙；尚未进入采集端安装。' >&2
+  exit "$status"
+fi
 set -- --server "$server"
 [ -z "$secret" ] || set -- "$@" --token "$secret"
 [ "$upgrade" != true ] || set -- "$@" --upgrade

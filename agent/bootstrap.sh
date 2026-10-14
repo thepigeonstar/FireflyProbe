@@ -48,9 +48,9 @@ command -v curl >/dev/null || { echo '请先执行 apt-get update && apt-get ins
 temporary=$(mktemp -d)
 trap 'rm -rf -- "$temporary"' EXIT
 phase='下载安装脚本和采集程序'
-curl --proto '=https' --tlsv1.2 --fail --show-error --silent --connect-timeout 15 --max-time 60 "$server/downloads/install.sh" -o "$temporary/install.sh"
-curl --proto '=https' --tlsv1.2 --fail --show-error --silent --connect-timeout 15 --max-time 300 "$server/downloads/lightprobe-agent-linux-$arch" -o "$temporary/lightprobe-agent-linux-$arch"
-curl --proto '=https' --tlsv1.2 --fail --show-error --silent --connect-timeout 15 --max-time 30 "$server/downloads/SHA256SUMS" -o "$temporary/SHA256SUMS"
+curl --proto '=https' --tlsv1.2 --http1.1 --retry 3 --retry-all-errors --retry-delay 2 --retry-max-time 360 --fail --show-error --silent --connect-timeout 15 --max-time 60 "$server/downloads/install.sh" -o "$temporary/install.sh"
+curl --proto '=https' --tlsv1.2 --http1.1 --retry 3 --retry-all-errors --retry-delay 2 --retry-max-time 360 --fail --show-error --silent --connect-timeout 15 --max-time 300 "$server/downloads/lightprobe-agent-linux-$arch" -o "$temporary/lightprobe-agent-linux-$arch"
+curl --proto '=https' --tlsv1.2 --http1.1 --retry 3 --retry-all-errors --retry-delay 2 --retry-max-time 360 --fail --show-error --silent --connect-timeout 15 --max-time 30 "$server/downloads/SHA256SUMS" -o "$temporary/SHA256SUMS"
 phase='校验采集程序'
 checksum=$(awk -v name="lightprobe-agent-linux-$arch" '$2 == name {print $1}' "$temporary/SHA256SUMS")
 [[ "$checksum" =~ ^[a-f0-9]{64}$ ]] || { echo '采集程序校验信息无效。' >&2; exit 1; }
@@ -58,7 +58,7 @@ printf '%s  %s\n' "$checksum" "$temporary/lightprobe-agent-linux-$arch" | sha256
 # Validate credentials before installing packages or changing a running agent.
 phase='验证主控连接和节点密钥'
 printf 'header = "Authorization: Bearer %s"\n' "$secret" > "$temporary/curl.conf"
-curl --config "$temporary/curl.conf" --proto '=https' --tlsv1.2 --fail --show-error --silent --connect-timeout 15 --max-time 30 "$server/api/agent/config" -o "$temporary/remote.json"
+curl --config "$temporary/curl.conf" --proto '=https' --tlsv1.2 --http1.1 --retry 3 --retry-all-errors --retry-delay 2 --retry-max-time 360 --fail --show-error --silent --connect-timeout 15 --max-time 30 "$server/api/agent/config" -o "$temporary/remote.json"
 printf '{"server":"%s","token":"%s","disk_path":"/"}\n' "$server" "$secret" > "$temporary/lightprobe-agent.json"
 if [[ "$upgrade" == true ]]; then
   python3 - "$temporary/lightprobe-agent.json" <<'PY'

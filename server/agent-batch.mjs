@@ -2,8 +2,8 @@ export function createAgentBatch(ssh,getNodes){
  let batch=null,timer=null,stopped=false;
  const view=()=>batch?structuredClone(batch):{status:'idle',items:[]};
  function step(){if(stopped||batch?.status!=='running')return;
-  for(const item of batch.items.filter(i=>i.status==='running')){let job;try{job=ssh.status(item.job_id);}catch{item.status='failed';item.message='任务已中断，请检查采集端状态';continue;}if(job.status!=='running'){item.status=job.status==='success'?'success':'failed';item.message=job.log;}}
-  for(const item of batch.items.filter(i=>i.status==='queued')){if(batch.items.filter(i=>i.status==='running').length>=2)break;try{const job=ssh.deploy(item.id);item.status='running';item.job_id=job.id;item.message='正在更新';}catch(e){if(e.status===409||e.status===429)break;item.status='failed';item.message=e.message;}}
+  for(const item of batch.items.filter(i=>i.status==='running')){let job;try{job=ssh.status(item.job_id);}catch{item.status='failed';item.message='任务已中断，请检查采集端状态';continue;}item.message=job.log;if(job.status!=='running')item.status=job.status==='success'?'success':'failed';}
+  for(const item of batch.items.filter(i=>i.status==='queued')){if(batch.items.some(i=>i.status==='running'))break;try{const job=ssh.deploy(item.id);item.status='running';item.job_id=job.id;item.message=job.log||'正在连接 SSH…';}catch(e){if(e.status===409||e.status===429)break;item.status='failed';item.message=e.message;}}
   if(!batch.items.some(i=>['queued','running'].includes(i.status))){batch.status='complete';batch.finished=Math.floor(Date.now()/1000);return;}
   timer=setTimeout(step,1000);timer.unref();
  }
