@@ -11,6 +11,8 @@ import {pluginFrame,pluginNodes} from './plugin-frame.mjs';
 import {createPluginAccess,pluginScopes} from './plugin-access.mjs';
 import {createAgentBatch} from './agent-batch.mjs';
 import {createForwarding,forwardURLs,gostVersion} from './forwarding.mjs';
+import {createForwardBatch} from './forward-batch.mjs';
+import {createForwardAlerts} from './forward-alerts.mjs';
 import {trafficHistory} from './traffic-history.mjs';
 import { openStore, dayKey, validDate, dailyTotals } from './store.mjs';
 import { brandDefaults, brandView, validateBrand } from './brand.mjs';
@@ -110,6 +112,8 @@ export async function createApp(options = {}) {
   const pluginAccess=createPluginAccess(db,plugins),pluginCalls=new Map();
   const ssh=createSSH({db,vault,publicURL,bootstrap:readFileSync(fileURLToPath(new URL('../agent/entry.sh',import.meta.url)),'utf8'),ClientClass:options.sshClient});
   const forwarding=createForwarding(db,ssh,()=>settings.timezone);
+  const forwardAlerts=createForwardAlerts(db);
+  const forwardBatch=createForwardBatch(forwarding,ssh,()=>db.prepare('SELECT * FROM nodes ORDER BY sort,name').all());
   const agentBatch=createAgentBatch(ssh,()=>db.prepare('SELECT * FROM nodes ORDER BY sort,name').all());
   function configuredNode(input,old={},id=old.id) {
     const fields={...nodeFields({...old,...input}),...sshFields(input,old)};
@@ -121,7 +125,7 @@ export async function createApp(options = {}) {
     if(fields.ssh_host!==(old.ssh_host??'')||fields.ssh_port!==(old.ssh_port??22))fields.ssh_fingerprint='';
     return fields;
   }
-  const remoteBackup=createRemoteBackup({db,dataDir:dirname(dbPath),vault,backups,runRclone:options.runRclone,blocked:()=>restoring||backups.busy||(agentBatch.busy||getNodes().some(n=>ssh.busy(n.id))),beforeSnapshot:()=>{for(const [id,l] of latest){flushMinute(id,l);db.prepare('UPDATE nodes SET last_seen=?,last_version=? WHERE id=?').run(l.received,l.metrics.version,id);}}});
+  const remoteBackup=createRemoteBackup({db,dataDir:dirname(dbPath),vault,backups,runRclone:options.runRclone,blocked:()=>restoring||backups.busy||(agentBatch.busy||forwardBatch.busy||getNodes().some(n=>ssh.busy(n.id))),beforeSnapshot:()=>{for(const [id,l] of latest){flushMinute(id,l);db.prepare('UPDATE nodes SET last_seen=?,last_version=? WHERE id=?').run(l.received,l.metrics.version,id);}}});
   const now = () => Math.floor(Date.now()/1000);
   const geoPending=new Map(),geoAttempts=new Map();let geoActive=0;
   function countryQueue(id,ip){if(!ip||closed||options.disableExternal)return;const n=db.prepare('SELECT country_ip,country_code,country_override FROM nodes WHERE id=?').get(id);if(!n||n.country_override||n.country_ip===ip&&n.country_code)return;const prior=geoAttempts.get(id);if(prior&&prior.ip===ip&&Date.now()-prior.time<3600000)return;geoAttempts.set(id,{ip,time:Date.now()});geoPending.set(id,ip);countryDrain();}
@@ -178,6 +182,7 @@ export async function createApp(options = {}) {
     workerBusy = true;
     try {
       const stamp = now(), today = dayKey(new Date(),settings.timezone), nodes = snapshot();
+      forwardAlerts.observe(nodes,forwarding.list(),settings,enqueue,stamp);
       for (const n of nodes) {
         if(!n.enabled)continue;
         processAlarms(db,n,settings,stamp,today,enqueue);
@@ -278,7 +283,7 @@ export async function createApp(options = {}) {
   }
   const writeNode=(id,n)=>{publicCache=null;return db.prepare(`UPDATE nodes SET ${Object.keys(n).map(k=>k+'=?').join(',')} WHERE id=?`).run(...Object.values(n),id);};
   async function restoreBackup(req) {
-    if(backups.busy||remoteBackup.busy||restoring||(agentBatch.busy||getNodes().some(n=>ssh.busy(n.id))))fail(409,'已有备份、恢复或 SSH 部署正在进行');
+    if(backups.busy||remoteBackup.busy||restoring||(agentBatch.busy||forwardBatch.busy||getNodes().some(n=>ssh.busy(n.id))))fail(409,'已有备份、恢复或 SSH 部署正在进行');
     const epoch=restoreEpoch,incoming=dbPath+'.incoming-'+randomUUID();let ownsLock=false;
     try {
       const passwordHeader=String(req.headers['x-backup-password']||'');if(passwordHeader.length>2048||passwordHeader&&!/^[A-Za-z0-9+/]*={0,2}$/.test(passwordHeader))fail(400,'备份密码编码无效');
@@ -296,7 +301,7 @@ export async function createApp(options = {}) {
           const remote=candidate.prepare("SELECT value FROM settings WHERE key='remote_backup'").get();if(remote){const c=remoteFields({},JSON.parse(remote.value));if(c.pass_cipher)c.pass_cipher=vault.seal(sourceVault.open(c.pass_cipher,'remote-backup'),'remote-backup');candidate.prepare("UPDATE settings SET value=? WHERE key='remote_backup'").run(JSON.stringify(c));}}
       loadTelegramSettings(candidate,vault,{...initial,...saved});
       }finally{candidate.close();}
-      if(restoring||backups.busy||remoteBackup.busy||epoch!==restoreEpoch||(agentBatch.busy||getNodes().some(n=>ssh.busy(n.id))))fail(409,'已有恢复或部署操作，请稍后重试');
+      if(restoring||backups.busy||remoteBackup.busy||epoch!==restoreEpoch||(agentBatch.busy||forwardBatch.busy||getNodes().some(n=>ssh.busy(n.id))))fail(409,'已有恢复或部署操作，请稍后重试');
       restoring=true;
       ownsLock=true;
       while(workerBusy||fx.busy)await new Promise(r=>setTimeout(r,20));
@@ -323,7 +328,7 @@ export async function createApp(options = {}) {
       settings={...initial,...JSON.parse(db.prepare("SELECT value FROM settings WHERE key='config'").get()?.value??'{}')};
       loadTelegramSettings(db,vault,settings);pluginAccess.reset();
       notificationGraceUntil=now()+settings.offline_seconds;
-      restoreEpoch++;geoAttempts.clear();geoPending.clear();agentBatch.cancel();agentBatch.reset();ssh.reset();publicHistoryCache.clear();
+      restoreEpoch++;geoAttempts.clear();geoPending.clear();agentBatch.cancel();agentBatch.reset();forwardBatch.cancel();forwardBatch.reset();ssh.reset();publicHistoryCache.clear();
       publicCache=null;
       sessions.clear();latest.clear();noticeState.clear();
     }finally{if(ownsLock)restoring=false;const cleanup=attempt=>{try{for(const suffix of ['','-wal','-shm'])rmSync(incoming+suffix,{force:true});}catch(e){if(attempt<12&&['EPERM','EBUSY','EACCES'].includes(e.code))setTimeout(()=>cleanup(attempt+1),5000).unref();else console.error('Restore cleanup:',e.name);}};cleanup(0);}
@@ -376,10 +381,15 @@ export async function createApp(options = {}) {
       if(path.startsWith('/api/')) {
         const session=auth(req,method!=='GET');
         if(path==='/api/agents/batch-update'&&method==='GET')return send(res,200,agentBatch.view());
-        if(path==='/api/agents/batch-update'&&method==='POST')return send(res,202,agentBatch.start());
+        if(path==='/api/agents/batch-update'&&method==='POST'){if(forwardBatch.busy)fail(409,'转发安装 / 更新队列正在执行，请稍后重试');return send(res,202,agentBatch.start());}
+        if(path==='/api/forwarding/batch'&&method==='GET')return send(res,200,forwardBatch.view());
+        if(path==='/api/forwarding/batch'&&method==='POST'){if(agentBatch.busy)fail(409,'采集端更新队列正在执行，请稍后重试');const data=await body(req);if(!data||typeof data!=='object'||Array.isArray(data))fail(400,'请求格式无效');return send(res,202,forwardBatch.start(data.node_id??''));}
+        if(path==='/api/forwarding/alerts'&&method==='GET')return send(res,200,forwardAlerts.config());
+        if(path==='/api/forwarding/alerts'&&method==='PUT')return send(res,200,forwardAlerts.save(await body(req)));
+        if(path.startsWith('/api/forwarding')&&['POST','PUT','DELETE'].includes(method)&&forwardBatch.busy)fail(409,'转发安装 / 更新队列正在执行，请完成后再修改规则');
         const forwardingHistory=/^\/api\/forwarding\/([a-f0-9-]{36})\/history$/.exec(path);if(forwardingHistory&&method==='GET'){const month=new URL(req.url,'http://localhost').searchParams.get('month');return send(res,200,{...(month?forwarding.dailyHistory(forwardingHistory[1],month):{months:forwarding.history(forwardingHistory[1])}),timezone:settings.timezone});}
         if(path==='/api/forwarding/order'&&method==='POST'){const data=await body(req);return send(res,200,forwarding.reorder(data.node_id,data.ids));}
-        if(path==='/api/forwarding'&&method==='GET')return send(res,200,{rules:forwarding.list().map(r=>({...r,urls:forwardURLs(r)})),gost_version:gostVersion,summary:forwarding.summary()});
+        if(path==='/api/forwarding'&&method==='GET'){const rules=forwarding.list();return send(res,200,{rules:rules.map(r=>({...r,urls:forwardURLs(r)})),nodes:snapshot().map(n=>({id:n.id,name:n.name,status:n.status,country_code:n.country_code})),events:forwardAlerts.history(),batch:forwardBatch.view(),gost_version:gostVersion,summary:forwarding.summary()});}
         if(path==='/api/forwarding'&&method==='POST')return send(res,201,forwarding.add(await body(req)));
         const forwardingEdit=/^\/api\/forwarding\/([a-f0-9-]{36})$/.exec(path);if(forwardingEdit&&method==='PUT')return send(res,202,forwarding.update(forwardingEdit[1],await body(req)));
         const forwardingAction=/^\/api\/forwarding\/([a-f0-9-]{36})\/(start|resume|stop|status|remove)$/.exec(path);
@@ -418,7 +428,7 @@ export async function createApp(options = {}) {
         const sshRoute=/^\/api\/nodes\/([a-f0-9-]{36})\/ssh\/(probe|trust|test|deploy)$/.exec(path);
         if(sshRoute&&method==='POST'){const [unused,id,action]=sshRoute;if(action==='probe')return send(res,200,await ssh.probe(id));if(action==='trust'){const input=await body(req);ssh.trust(id,input.fingerprint);return send(res,200,{ok:true});}if(action==='test')return send(res,200,await ssh.test(id));return send(res,202,ssh.deploy(id));}
         const jobRoute=/^\/api\/ssh\/jobs\/([a-f0-9-]{36})$/.exec(path);if(jobRoute&&method==='GET')return send(res,200,ssh.status(jobRoute[1]));
-        if(path==='/api/nodes'&&method==='GET') {const rates=fx.read();const {rates:unused,...fxInfo}=rates;return send(res,200,{nodes:snapshot(),settings:safeSettings(),cost_summary:costSummary(getNodes(),rates),fx_info:fxInfo,server_time:now(),version:'0.2.23',agent_version:'0.2.2'});}
+        if(path==='/api/nodes'&&method==='GET') {const rates=fx.read();const {rates:unused,...fxInfo}=rates;return send(res,200,{nodes:snapshot(),settings:safeSettings(),cost_summary:costSummary(getNodes(),rates),fx_info:fxInfo,server_time:now(),version:'0.2.24',agent_version:'0.2.2'});}
         const adminNetwork=/^\/api\/nodes\/([a-f0-9-]{36})\/network-history$/.exec(path);if(adminNetwork&&method==='GET')return send(res,200,publicHistory(adminNetwork[1],true));
         if(path==='/api/network/history'&&method==='GET')return send(res,200,publicHistory('network',true));
         if(path==='/api/costs'&&method==='GET')return send(res,200,{...costSummary(getNodes(),fx.read()),fx:fx.read()});
@@ -455,7 +465,7 @@ export async function createApp(options = {}) {
           if(!match[2]&&method==='DELETE') {if(forwarding.hasNode(node.id))fail(409,'请先删除该服务器的转发规则，再删除服务器');if(ssh.busy(node.id))fail(409,'部署中不能删除服务器');db.prepare('DELETE FROM nodes WHERE id=?').run(node.id);db.prepare('DELETE FROM settings WHERE key=?').run('node_system:'+node.id);latest.delete(node.id);noticeState.delete(node.id);geoAttempts.delete(node.id);geoPending.delete(node.id);publicCache=null;return send(res,200,{ok:true});}
         }
         if(path==='/api/settings'&&method==='GET') return send(res,200,editableSettings());
-        if(path==='/api/settings'&&method==='PUT') {const input=await body(req),updated=settingsFields(input,settings);if(input.notification_targets!==undefined){const reportChanged=JSON.stringify(settings.notification_targets?.report??null)!==JSON.stringify(updated.notification_targets.report);for(const job of db.prepare("SELECT id,event_key FROM outbox WHERE status='pending'").all()){const [kind,id]=job.event_key.split(':'),type=({quota:'quota',offline:'offline',recovery:'offline',resource:'resource','resource-recovery':'resource',expiry:'expiry',expired:'expiry'})[kind];if((kind==='daily'&&reportChanged)||(type&&!notificationSelected(updated,type,id)))db.prepare("UPDATE outbox SET event_key=event_key||?,status='failed',error='通知服务器范围调整，已取消待发送通知' WHERE id=?").run(':scope-'+randomUUID(),job.id);}}persistTelegramSettings(db,vault,updated);const pathChanged=settings.admin_path!==updated.admin_path;settings=updated;publicCache=null;publicHistoryCache.clear();if(pathChanged){sessions.clear();res.setHeader('Set-Cookie','lp_session=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0');}return send(res,200,{...editableSettings(),redirect_admin:pathChanged?settings.admin_path:undefined});}
+        if(path==='/api/settings'&&method==='PUT') {const input=await body(req),updated=settingsFields(input,settings);if(input.notification_targets!==undefined){const reportChanged=JSON.stringify(settings.notification_targets?.report??null)!==JSON.stringify(updated.notification_targets.report);for(const job of db.prepare("SELECT id,event_key FROM outbox WHERE status='pending'").all()){const [kind,id]=job.event_key.split(':'),type=({quota:'quota',offline:'offline',recovery:'offline','forward-failure':'offline','forward-recovery':'offline',resource:'resource','resource-recovery':'resource',expiry:'expiry',expired:'expiry'})[kind];if((kind==='daily'&&reportChanged)||(type&&!notificationSelected(updated,type,id)))db.prepare("UPDATE outbox SET event_key=event_key||?,status='failed',error='通知服务器范围调整，已取消待发送通知' WHERE id=?").run(':scope-'+randomUUID(),job.id);}}persistTelegramSettings(db,vault,updated);const pathChanged=settings.admin_path!==updated.admin_path;settings=updated;publicCache=null;publicHistoryCache.clear();if(pathChanged){sessions.clear();res.setHeader('Set-Cookie','lp_session=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0');}return send(res,200,{...editableSettings(),redirect_admin:pathChanged?settings.admin_path:undefined});}
         if(path==='/api/notifications'&&method==='GET') return send(res,200,db.prepare('SELECT id,status,attempts,created,sent,error FROM outbox ORDER BY id DESC LIMIT 5').all());
         if(path==='/api/notifications/test'&&method==='POST') {if(!enqueue(`test:${randomUUID()}`,`✅ ${settings.brand_name} 通知测试成功`)) fail(400,'请先配置 Telegram Token 和 Chat ID');return send(res,200,{ok:true,message:'已加入发送队列，请稍后查看状态'});}
         fail(404,'接口不存在');
@@ -487,11 +497,11 @@ export async function createApp(options = {}) {
     db.prepare('DELETE FROM daily WHERE date<?').run(dayKey(new Date((stamp-settings.keep_days*86400)*1000),settings.timezone));
     db.prepare("DELETE FROM outbox WHERE status='sent' AND created<?").run(stamp-90*86400);
   },3600000);maintenance.unref();
-  return {server,remoteBackup,get db(){return db;},snapshot,notifications,close:async()=>{closed=true;agentBatch.cancel();ssh.cancelAll();clearInterval(tick);clearInterval(flush);clearInterval(maintenance);clearInterval(extrasTick);clearInterval(remoteTick);await remoteBackup.close();if(db.isOpen)for(const [id,l] of latest){db.prepare('UPDATE nodes SET last_seen=? WHERE id=?').run(l.received,id);flushMinute(id,l);}await new Promise(r=>server.close(r));while(workerBusy||fx.busy||backups.busy)await new Promise(r=>setTimeout(r,50));if(db.isOpen)db.close();}};
+  return {server,remoteBackup,get db(){return db;},snapshot,notifications,close:async()=>{closed=true;agentBatch.cancel();forwardBatch.cancel();ssh.cancelAll();clearInterval(tick);clearInterval(flush);clearInterval(maintenance);clearInterval(extrasTick);clearInterval(remoteTick);await remoteBackup.close();if(db.isOpen)for(const [id,l] of latest){db.prepare('UPDATE nodes SET last_seen=? WHERE id=?').run(l.received,id);flushMinute(id,l);}await new Promise(r=>server.close(r));while(workerBusy||fx.busy||backups.busy)await new Promise(r=>setTimeout(r,50));if(db.isOpen)db.close();}};
 }
 function formatBytes(bytes) {const units=['B','KiB','MiB','GiB','TiB'];let i=0;while(bytes>=1024&&i<4){bytes/=1024;i++;}return bytes.toFixed(1)+' '+units[i];}
 if(process.argv[1] && import.meta.url===pathToFileURL(resolve(process.argv[1])).href) {
   const app=await createApp();
-  app.server.listen(Number(process.env.PORT ?? 8080),process.env.HOST ?? '127.0.0.1',()=>console.log(`Firefly Probe 0.2.23 listening on ${process.env.HOST ?? '127.0.0.1'}:${process.env.PORT ?? 8080}`));
+  app.server.listen(Number(process.env.PORT ?? 8080),process.env.HOST ?? '127.0.0.1',()=>console.log(`Firefly Probe 0.2.24 listening on ${process.env.HOST ?? '127.0.0.1'}:${process.env.PORT ?? 8080}`));
   let stopping=false;for(const sig of ['SIGINT','SIGTERM']) process.on(sig,async()=>{if(stopping)return;stopping=true;await app.close();process.exit(0);});
 }
