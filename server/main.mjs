@@ -387,6 +387,7 @@ export async function createApp(options = {}) {
         if(path==='/api/forwarding/alerts'&&method==='GET')return send(res,200,forwardAlerts.config());
         if(path==='/api/forwarding/alerts'&&method==='PUT')return send(res,200,forwardAlerts.save(await body(req)));
         if(path.startsWith('/api/forwarding')&&['POST','PUT','DELETE'].includes(method)&&forwardBatch.busy)fail(409,'转发安装 / 更新队列正在执行，请完成后再修改规则');
+        if(path==='/api/forwarding/copy'&&method==='POST')return send(res,201,forwarding.copy(await body(req)));
         const forwardingHistory=/^\/api\/forwarding\/([a-f0-9-]{36})\/history$/.exec(path);if(forwardingHistory&&method==='GET'){const month=new URL(req.url,'http://localhost').searchParams.get('month');return send(res,200,{...(month?forwarding.dailyHistory(forwardingHistory[1],month):{months:forwarding.history(forwardingHistory[1])}),timezone:settings.timezone});}
         if(path==='/api/forwarding/order'&&method==='POST'){const data=await body(req);return send(res,200,forwarding.reorder(data.node_id,data.ids));}
         if(path==='/api/forwarding'&&method==='GET'){const rules=forwarding.list();return send(res,200,{rules:rules.map(r=>({...r,urls:forwardURLs(r)})),nodes:snapshot().map(n=>({id:n.id,name:n.name,status:n.status,country_code:n.country_code})),events:forwardAlerts.history(),batch:forwardBatch.view(),gost_version:gostVersion,summary:forwarding.summary()});}
@@ -428,7 +429,7 @@ export async function createApp(options = {}) {
         const sshRoute=/^\/api\/nodes\/([a-f0-9-]{36})\/ssh\/(probe|trust|test|deploy)$/.exec(path);
         if(sshRoute&&method==='POST'){const [unused,id,action]=sshRoute;if(action==='probe')return send(res,200,await ssh.probe(id));if(action==='trust'){const input=await body(req);ssh.trust(id,input.fingerprint);return send(res,200,{ok:true});}if(action==='test')return send(res,200,await ssh.test(id));return send(res,202,ssh.deploy(id));}
         const jobRoute=/^\/api\/ssh\/jobs\/([a-f0-9-]{36})$/.exec(path);if(jobRoute&&method==='GET')return send(res,200,ssh.status(jobRoute[1]));
-        if(path==='/api/nodes'&&method==='GET') {const rates=fx.read();const {rates:unused,...fxInfo}=rates;return send(res,200,{nodes:snapshot(),settings:safeSettings(),cost_summary:costSummary(getNodes(),rates),fx_info:fxInfo,server_time:now(),version:'0.2.24',agent_version:'0.2.2'});}
+        if(path==='/api/nodes'&&method==='GET') {const rates=fx.read();const {rates:unused,...fxInfo}=rates;return send(res,200,{nodes:snapshot(),settings:safeSettings(),cost_summary:costSummary(getNodes(),rates),fx_info:fxInfo,server_time:now(),version:'0.2.25',agent_version:'0.2.2'});}
         const adminNetwork=/^\/api\/nodes\/([a-f0-9-]{36})\/network-history$/.exec(path);if(adminNetwork&&method==='GET')return send(res,200,publicHistory(adminNetwork[1],true));
         if(path==='/api/network/history'&&method==='GET')return send(res,200,publicHistory('network',true));
         if(path==='/api/costs'&&method==='GET')return send(res,200,{...costSummary(getNodes(),fx.read()),fx:fx.read()});
@@ -502,6 +503,6 @@ export async function createApp(options = {}) {
 function formatBytes(bytes) {const units=['B','KiB','MiB','GiB','TiB'];let i=0;while(bytes>=1024&&i<4){bytes/=1024;i++;}return bytes.toFixed(1)+' '+units[i];}
 if(process.argv[1] && import.meta.url===pathToFileURL(resolve(process.argv[1])).href) {
   const app=await createApp();
-  app.server.listen(Number(process.env.PORT ?? 8080),process.env.HOST ?? '127.0.0.1',()=>console.log(`Firefly Probe 0.2.24 listening on ${process.env.HOST ?? '127.0.0.1'}:${process.env.PORT ?? 8080}`));
+  app.server.listen(Number(process.env.PORT ?? 8080),process.env.HOST ?? '127.0.0.1',()=>console.log(`Firefly Probe 0.2.25 listening on ${process.env.HOST ?? '127.0.0.1'}:${process.env.PORT ?? 8080}`));
   let stopping=false;for(const sig of ['SIGINT','SIGTERM']) process.on(sig,async()=>{if(stopping)return;stopping=true;await app.close();process.exit(0);});
 }
