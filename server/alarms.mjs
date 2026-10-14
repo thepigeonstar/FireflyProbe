@@ -1,5 +1,5 @@
 import {notificationSelected} from './notification-targets.mjs';
-export const alarmDefaults={cpu_threshold:90,mem_threshold:90,disk_threshold:90,alert_duration:300,expiry_days:[7,3,1,0],quiet_enabled:false,quiet_start:'23:00',quiet_end:'08:00',backup_enabled:true,backup_keep:7,public_enabled:false,public_show_metrics:true,public_show_traffic:false};
+export const alarmDefaults={cpu_threshold:90,mem_threshold:90,disk_threshold:90,alert_duration:300,expiry_days:[7,3,1,0],quiet_enabled:false,quiet_start:'23:00',quiet_end:'08:00',backup_enabled:true,backup_keep:7,public_enabled:false,public_show_metrics:true,public_show_system:false,public_show_traffic:false};
 export function inQuiet(settings,at=new Date()) {
   if(!settings.quiet_enabled||settings.quiet_start===settings.quiet_end)return false;
   const p=Object.fromEntries(new Intl.DateTimeFormat('en-GB',{timeZone:settings.timezone,hour:'2-digit',minute:'2-digit',hourCycle:'h23'}).formatToParts(at).map(x=>[x.type,x.value]));

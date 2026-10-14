@@ -1,6 +1,6 @@
 'use strict';
 const extraNumbers=['cpu_threshold','mem_threshold','disk_threshold','alert_duration','backup_keep'];
-const extraSwitches=['quiet_enabled','backup_enabled','public_enabled','public_show_metrics','public_show_traffic'];
+const extraSwitches=['quiet_enabled','backup_enabled','public_enabled','public_show_metrics','public_show_system','public_show_traffic'];
 const extraCurrencies=['CNY','USD','EUR','GBP','JPY','HKD','KRW','SGD','AUD','CAD','CHF','NZD','TWD','INR','RUB','TRY','BRL','MXN','THB','MYR','IDR','PHP','VND','ZAR','SEK','NOK','DKK','PLN','AED','SAR'];
 const extraMoney=n=>n===null||n===undefined?'待汇率':'¥'+Number(n).toLocaleString('zh-CN',{minimumFractionDigits:2,maximumFractionDigits:2});
 const extraApi=api;

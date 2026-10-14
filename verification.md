@@ -173,3 +173,7 @@ Installer hotfix: UTF-8 Python input/output is forced even when SSH inherits PYT
 System release metadata is parsed without executing os-release, reported by agent 0.2.1, validated and persisted by the master. Tests cover Debian/Ubuntu/Alpine release strings, restart persistence, public visibility and node deletion. Static amd64/arm64 binaries and SHA256SUMS are rebuilt.
 
 Validation: all 72 Node tests pass; Go tests and vet pass. Chrome verifies system labels on overview, server list and public cards with no page errors. No real VPS deployment was performed.
+
+## v0.2.17
+
+74 Node tests pass. Tests cover forwarding input validation, IPv6 formatting, fixed official GOST SHA256, POSIX shell syntax, authenticated/CSRF-protected routes, SSH fingerprint prerequisites, protocol/port collisions, real SSH protocol transport with simulated remote shell results, secret redaction, task failure, stop/remove and preventing node deletion while rules remain. Chrome validates the default-off independent public system permission, rule creation/deletion, generated TCP+UDP addresses and page navigation. GOST shell integration test syntax and ShellCheck pass. Windows security software blocked the downloaded official GOST executable; it was not run or bypassed. Real Linux GOST TCP/UDP loopback integration is added to GitHub CI and has NOT yet run here. No real VPS deployment was performed; systemd/OpenRC forwarding services still require Linux CI/VPS validation. Agent remains 0.2.1.

@@ -41,3 +41,5 @@ bash -o pipefail -c 'curl --proto "=https" --tlsv1.2 -fsS https://raw.githubuser
 ```
 
 服务器列表和监控卡片可显示操作系统及版本（需采集端 0.2.1 或以上）。
+
+支持 SSH 管理 GOST TCP/UDP 明文转发，详见 [转发指南](docs/Forwarding.md)。公开页系统版本需管理员单独开启展示。
