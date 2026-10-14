@@ -39,3 +39,5 @@ bash -o pipefail -c 'curl --proto "=https" --tlsv1.2 -fsS https://raw.githubuser
 ```bash
 bash -o pipefail -c 'curl --proto "=https" --tlsv1.2 -fsS https://raw.githubusercontent.com/thepigeonstar/FireflyProbe/main/uninstall-master.sh | bash'
 ```
+
+服务器列表和监控卡片可显示操作系统及版本（需采集端 0.2.1 或以上）。

@@ -167,3 +167,9 @@ Browser verifies editable country codes/names/auto and settings plugin navigatio
 69 Node tests pass. Tests cover Alpine POSIX launcher dependency preparation, stable release checks, safe argument handling, SSH hostname/IDN normalization and fingerprint revocation. Real SSH protocol tests pass with the portable sh command. Chrome verifies hostname entry, portable installation command, button layout and existing plugin security. ShellCheck and syntax checks pass; Alpine HTTP fixture compiles. A real Alpine 3.22 apk/OpenRC install/first-report/reinstall test is added to GitHub CI, but cannot be executed in this Windows workspace; do not treat it as already passed. Agent binary/version remain unchanged.
 
 Installer hotfix: UTF-8 Python input/output is forced even when SSH inherits PYTHONIOENCODING=latin-1. Debian 11 apt failures retain exit 100 and explain retired backports without changing repositories. Six installer regression tests pass. No actual VPS deployment was performed.
+
+## v0.2.16
+
+System release metadata is parsed without executing os-release, reported by agent 0.2.1, validated and persisted by the master. Tests cover Debian/Ubuntu/Alpine release strings, restart persistence, public visibility and node deletion. Static amd64/arm64 binaries and SHA256SUMS are rebuilt.
+
+Validation: all 72 Node tests pass; Go tests and vet pass. Chrome verifies system labels on overview, server list and public cards with no page errors. No real VPS deployment was performed.

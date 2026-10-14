@@ -23,7 +23,7 @@ import (
 	"time"
 )
 
-const version = "0.2.0"
+const version = "0.2.1"
 
 type Config struct {
 	Server         string `json:"server"`
@@ -46,6 +46,7 @@ type Day struct {
 type Report struct {
 	Version         string   `json:"version"`
 	Hostname        string   `json:"hostname"`
+	System          string   `json:"system"`
 	Interface       string   `json:"interface"`
 	Interfaces      []string `json:"interfaces"`
 	RxSpeed         float64  `json:"rx_speed"`
@@ -62,6 +63,56 @@ type Report struct {
 	HistoryTimezone string   `json:"history_timezone,omitempty"`
 }
 type Counters struct{ Rx, Tx uint64 }
+
+// Read release metadata as data; never execute shell assignments.
+func parseSystem(raw string) string {
+	values := map[string]string{}
+	for _, line := range strings.Split(raw, "\n") {
+		key, value, ok := strings.Cut(strings.TrimSpace(line), "=")
+		if !ok {
+			continue
+		}
+		if key != "PRETTY_NAME" && key != "NAME" && key != "VERSION_ID" {
+			continue
+		}
+		value = strings.TrimSpace(value)
+		if strings.HasPrefix(value, "\"") {
+			if decoded, err := strconv.Unquote(value); err == nil {
+				value = decoded
+			}
+		} else {
+			value = strings.Trim(value, "'")
+		}
+		values[key] = value
+	}
+	result := values["PRETTY_NAME"]
+	if result == "" {
+		result = strings.TrimSpace(values["NAME"] + " " + values["VERSION_ID"])
+	}
+	result = strings.Map(func(r rune) rune {
+		if r < 32 || r == 127 {
+			return -1
+		}
+		return r
+	}, result)
+	runes := []rune(result)
+	if len(runes) > 120 {
+		result = string(runes[:120])
+	}
+	return result
+}
+
+func readSystem() string {
+	for _, path := range []string{"/etc/os-release", "/usr/lib/os-release"} {
+		if raw, err := os.ReadFile(path); err == nil {
+			if name := parseSystem(string(raw)); name != "" {
+				return name
+			}
+		}
+	}
+	return "Linux"
+}
+
 type CPUCounter struct{ Total, Idle uint64 }
 
 var interfacePattern = regexp.MustCompile(`^[a-zA-Z0-9_.:@-]{1,40}$`)
@@ -371,6 +422,7 @@ func main() {
 		at := time.Now()
 		report := Report{Version: version, Interface: iface}
 		report.Hostname, _ = os.Hostname()
+		report.System = readSystem()
 		for name := range networks {
 			report.Interfaces = append(report.Interfaces, name)
 		}
