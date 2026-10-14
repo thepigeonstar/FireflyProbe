@@ -102,7 +102,7 @@
 
 ## v0.2.1 验证
 
-Node 35 项通过；包含真实本地 SSH2 协议、指纹确认、凭据加密绑定、密码错误和部署失败、日志脱敏。Chrome 覆盖服务器列表、SSH 配置和模拟部署 UI、费用和待接入跳转、上下行小字、移除批量界面及桌面/手机布局；原有品牌、Telegram 设置、趋势、公开页面、备份恢复继续通过。ShellCheck 通过。真实远程 Linux 安装及 Docker 构建未在 Windows 本地执行，需 GitHub CI 与服务器验证。详细变化见 UPDATE-v0.2.1.md。
+Node 35 项通过；包含真实本地 SSH2 协议、指纹确认、凭据加密绑定、密码错误和部署失败、日志脱敏。Chrome 覆盖服务器列表、SSH 配置和模拟部署 UI、费用和待接入跳转、上下行小字、移除批量界面及桌面/手机布局；原有品牌、Telegram 设置、趋势、公开页面、备份恢复继续通过。ShellCheck 通过。真实远程 Linux 安装及 Docker 构建未在 Windows 本地执行，需 GitHub CI 与服务器验证。详细变化见 CHANGELOG.md。
 
 
 ## v0.2.2 验证
@@ -187,3 +187,7 @@ GOST download hotfix: GitHub run 38530192131 passed Node/Go, Docker and Alpine t
 ## v0.2.19
 
 All 77 Node tests pass. Daily tests cover Shanghai midnight, duplicate samples, preserving pre-upgrade monthly totals, identifying unassigned historic bytes, valid month queries and node/rule ownership. Chrome verifies separate address/traffic columns, removal of the monthly prefix, a month selector and daily traffic history, alongside existing rule filters, logs, health and bulk update UI. Agent remains 0.2.2 and binaries are unchanged. Historical daily detail cannot be reconstructed from previous monthly-only records.
+
+## v0.2.20
+
+All 78 Node tests pass. Rule ordering requires admin authentication/CSRF and validates a complete, unique rule list belonging to the selected node, persists atomically and survives master restart. Chrome performs actual drag/drop, verifies the navigation order, notification location inside Settings and at least 8px between Settings and Plugins. PowerShell uploader parses successfully; a local Git fixture verifies removal/staging only of tracked root UPDATE-v*.md notes with unrelated files preserved. Versioned notes are consolidated, with links and installer/package references updated to CHANGELOG.md. Agent remains 0.2.2. No remote push or VPS update was performed.

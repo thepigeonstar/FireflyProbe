@@ -17,6 +17,8 @@
 
 .install-options{display:flex;align-items:stretch;gap:20px;flex-wrap:wrap;margin:20px 0}.install-options>button{min-height:44px;padding:12px 20px;flex:1}.server-actions{gap:16px}@media(max-width:600px){.install-options{flex-direction:column;gap:16px}.install-options>button{width:100%;flex:none}}
 /* Forwarding health and batch status. */
+.settings-menu #settings-children{margin-top:8px;display:flex;flex-direction:column;gap:6px}
+.settings-menu #settings-children[hidden]{display:none}
 #forwarding-list .status-dot.offline{background:var(--red)}
 #forwarding-list .status-dot.pending{background:#d6a23c}
 #forwarding-dialog{width:min(900px,calc(100% - 32px))}

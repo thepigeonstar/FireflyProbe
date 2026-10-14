@@ -30,7 +30,7 @@ bash -o pipefail -c 'curl --proto "=https" --tlsv1.2 -fsS https://raw.githubuser
 - [生产安全配置](docs/Security.md)
 - [示例插件包](examples/my-summary.ffplugin.json) · [服务器工具箱](examples/server-toolbox.ffplugin.json)
 - [插件开发](docs/wiki/Plugin-Development.md) · [GitHub Wiki](https://github.com/thepigeonstar/FireflyProbe/wiki)
-- [本次更新](UPDATE-v0.2.15.md) · [验证记录](verification.md)
+- [更新记录](CHANGELOG.md) · [验证记录](verification.md)
 
 主控：Node.js 24、SQLite、Docker。采集端：Go、systemd、vnStat。
 

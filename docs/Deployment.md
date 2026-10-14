@@ -182,7 +182,7 @@ setup.sh      主控初始化
 
 基础组件参考：[Node.js SQLite](https://nodejs.org/docs/latest-v24.x/api/sqlite.html)、[vnStat 官方手册](https://humdi.net/vnstat/man/vnstat.html)。
 
-本次调整见 [UPDATE-v0.2.6.md](../UPDATE-v0.2.6.md)。国家识别使用 [country.is](https://github.com/lineofflight/country)，国旗为随包提供的 flag-icons SVG。
+本次调整见 [v0.2.6 更新记录](../CHANGELOG.md#v026)。国家识别使用 [country.is](https://github.com/lineofflight/country)，国旗为随包提供的 flag-icons SVG。
 
 ## 主控默认目录与卸载
 
