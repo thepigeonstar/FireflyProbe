@@ -23,7 +23,7 @@ import (
 	"time"
 )
 
-const version = "0.2.1"
+const version = "0.2.2"
 
 type Config struct {
 	Server         string `json:"server"`
@@ -44,23 +44,24 @@ type Day struct {
 	Tx   uint64 `json:"tx"`
 }
 type Report struct {
-	Version         string   `json:"version"`
-	Hostname        string   `json:"hostname"`
-	System          string   `json:"system"`
-	Interface       string   `json:"interface"`
-	Interfaces      []string `json:"interfaces"`
-	RxSpeed         float64  `json:"rx_speed"`
-	TxSpeed         float64  `json:"tx_speed"`
-	CPU             float64  `json:"cpu"`
-	MemTotal        uint64   `json:"mem_total"`
-	MemUsed         uint64   `json:"mem_used"`
-	DiskTotal       uint64   `json:"disk_total"`
-	DiskUsed        uint64   `json:"disk_used"`
-	Uptime          float64  `json:"uptime"`
-	SampleError     string   `json:"sample_error"`
-	Days            *[]Day   `json:"days,omitempty"`
-	HistoryError    string   `json:"history_error,omitempty"`
-	HistoryTimezone string   `json:"history_timezone,omitempty"`
+	Version         string          `json:"version"`
+	Hostname        string          `json:"hostname"`
+	System          string          `json:"system"`
+	Forwarding      []ForwardSample `json:"forwarding,omitempty"`
+	Interface       string          `json:"interface"`
+	Interfaces      []string        `json:"interfaces"`
+	RxSpeed         float64         `json:"rx_speed"`
+	TxSpeed         float64         `json:"tx_speed"`
+	CPU             float64         `json:"cpu"`
+	MemTotal        uint64          `json:"mem_total"`
+	MemUsed         uint64          `json:"mem_used"`
+	DiskTotal       uint64          `json:"disk_total"`
+	DiskUsed        uint64          `json:"disk_used"`
+	Uptime          float64         `json:"uptime"`
+	SampleError     string          `json:"sample_error"`
+	Days            *[]Day          `json:"days,omitempty"`
+	HistoryError    string          `json:"history_error,omitempty"`
+	HistoryTimezone string          `json:"history_timezone,omitempty"`
 }
 type Counters struct{ Rx, Tx uint64 }
 
@@ -372,6 +373,8 @@ func main() {
 	var prevIface string
 	var prevTime time.Time
 	var configAt, historyAt time.Time
+	var forwardingAt time.Time
+	var forwardSamples []ForwardSample
 	backoff := time.Duration(0)
 	if e == nil {
 		configAt = time.Now()
@@ -423,6 +426,11 @@ func main() {
 		report := Report{Version: version, Interface: iface}
 		report.Hostname, _ = os.Hostname()
 		report.System = readSystem()
+		if time.Since(forwardingAt) >= 30*time.Second {
+			forwardSamples = collectForwarding(ctx, "/etc/firefly-forward")
+			forwardingAt = time.Now()
+		}
+		report.Forwarding = forwardSamples
 		for name := range networks {
 			report.Interfaces = append(report.Interfaces, name)
 		}

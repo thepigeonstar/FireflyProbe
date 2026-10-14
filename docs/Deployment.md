@@ -213,3 +213,7 @@ Alpine 日志为 root 私有文件，生产环境可按自己的日志保留策�
 SSH 配置的地址可填写 IPv4、IPv6 或域名，例如 nathkt1.bytevirt.net。只填主机名，不带 https://、路径或 :端口；NAT 映射端口单独填写。更换域名或端口后需要重新确认指纹。支持国际域名并规范为 ASCII；实际解析和连接发生在主控。
 
 [Alpine OpenRC 官方说明](https://wiki.alpinelinux.org/wiki/OpenRC)、[Alpine vnstatd 服务脚本](https://github.com/alpinelinux/aports/blob/3.22-stable/community/vnstat/vnstatd.initd)。
+
+## 全部更新采集端
+
+服务器列表的“全部更新采集端”每次最多更新两台，使用已保存密码和确认的 SSH 指纹。未接入、停用或缺少 SSH 配置的服务器会跳过并显示原因；单台失败不影响剩余队列。可展开查看各台结果。主控重启会中断队列，需核对状态后重新提交。已有采集端使用原配置，异主控保护继续生效。更新短暂重启采集端，不重启服务器或 GOST。

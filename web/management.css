@@ -16,3 +16,8 @@
 .plugin-frame{width:100%;height:360px;border:1px solid var(--line);border-radius:10px;background:var(--card)}.plugin-permissions{margin:16px 0}.plugin-permissions .check{margin:10px 0}
 
 .install-options{display:flex;align-items:stretch;gap:20px;flex-wrap:wrap;margin:20px 0}.install-options>button{min-height:44px;padding:12px 20px;flex:1}.server-actions{gap:16px}@media(max-width:600px){.install-options{flex-direction:column;gap:16px}.install-options>button{width:100%;flex:none}}
+/* Forwarding health and batch status. */
+#forwarding-list .status-dot.offline{background:var(--red)}
+#forwarding-list .status-dot.pending{background:#d6a23c}
+#forwarding-dialog{width:min(900px,calc(100% - 32px))}
+#agent-batch-status:empty{display:none}

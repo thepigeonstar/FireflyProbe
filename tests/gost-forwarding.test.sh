@@ -8,10 +8,11 @@ printf '%s  %s\n' 676fb7f78d267b6ae73df719c0c7f2b565dde7147da935cfafbc1e1da558b6
 tar -xzf "$temporary/gost.tar.gz" -C "$temporary" gost
 echo 'Testing real TCP and UDP loopback forwarding...'
 python3 - "$temporary/gost" <<'PY'
-import socket, subprocess, sys, threading, time, tempfile
+import socket, subprocess, sys, threading, time, tempfile, urllib.request
 tcp=socket.socket(); tcp.bind(('127.0.0.1',0)); tcp.listen(); target=tcp.getsockname()[1]
 udp=socket.socket(socket.AF_INET,socket.SOCK_DGRAM); udp.bind(('127.0.0.1',target))
 reserve=socket.socket(); reserve.bind(('127.0.0.1',0)); listen=reserve.getsockname()[1]; reserve.close()
+reserve=socket.socket(); reserve.bind(('127.0.0.1',0)); metrics=reserve.getsockname()[1]; reserve.close()
 def echo_tcp():
     while True:
         c,_=tcp.accept()
@@ -26,7 +27,7 @@ def echo_udp():
 threading.Thread(target=echo_tcp,daemon=True).start()
 threading.Thread(target=echo_udp,daemon=True).start()
 logs=tempfile.TemporaryFile()
-p=subprocess.Popen([sys.argv[1],'-L',f'tcp://127.0.0.1:{listen}/127.0.0.1:{target}','-L',f'udp://127.0.0.1:{listen}/127.0.0.1:{target}'],stdout=logs,stderr=logs)
+p=subprocess.Popen([sys.argv[1],'-L',f'tcp://127.0.0.1:{listen}/127.0.0.1:{target}','-L',f'udp://127.0.0.1:{listen}/127.0.0.1:{target}','-metrics',f'127.0.0.1:{metrics}'],stdout=logs,stderr=logs)
 try:
     for attempt in range(50):
         if p.poll() is not None: raise RuntimeError('GOST exited')
@@ -38,7 +39,12 @@ try:
     else: raise RuntimeError('TCP forwarding did not start')
     with socket.socket(socket.AF_INET,socket.SOCK_DGRAM) as c:
         c.settimeout(5); c.sendto(b'firefly-udp',('127.0.0.1',listen)); assert c.recvfrom(4096)[0]==b'firefly-udp'
-    print('Official GOST 3.3.0 TCP and UDP forwarding passed')
+    with urllib.request.urlopen(f'http://127.0.0.1:{metrics}/metrics',timeout=5) as r: values=r.read().decode()
+    assert 'gost_services' in values
+    for name in ['gost_service_transfer_input_bytes_total','gost_service_transfer_output_bytes_total']:
+        total=sum(float(line.rsplit(' ',1)[1]) for line in values.splitlines() if line.startswith(name+'{'))
+        assert total>0, 'GOST byte counter missing: '+name
+    print('Official GOST 3.3.0 TCP, UDP and Metrics byte counters passed')
 except Exception:
     logs.seek(0)
     print('GOST process output:',file=sys.stderr)
