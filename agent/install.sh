@@ -26,7 +26,7 @@ phase='检查系统版本'
 # shellcheck disable=SC1091
 source /etc/os-release
 case "$ID" in
-  debian) dpkg --compare-versions "$VERSION_ID" ge 11 || { echo "当前 Debian $VERSION_ID，需要 Debian 11 及以上。" >&2; exit 1; } ;;
+  debian) dpkg --compare-versions "$VERSION_ID" ge 11 || { echo "当前 Debian ${VERSION_ID}，需要 Debian 11 及以上。" >&2; exit 1; } ;;
   ubuntu) dpkg --compare-versions "$VERSION_ID" ge 22.04 || { echo '需要 Ubuntu 22.04 及以上。'; exit 1; } ;;
   alpine) [[ "$VERSION_ID" =~ ^[0-9]+\.[0-9]+([.][0-9]+)?$ && "$(apk version -t "$VERSION_ID" 3.20)" != '<' ]] || { echo '需要稳定版 Alpine 3.20 及以上。' >&2; exit 1; } ;;
   *) echo '支持 Debian / Ubuntu / Alpine。' >&2; exit 1 ;;
@@ -37,7 +37,7 @@ if [[ -z "$binary_path" ]]; then
     if [[ -f "$candidate" ]]; then binary_path="$candidate"; break; fi
   done
 fi
-[[ -f "$binary_path" ]] || { echo "找不到 lightprobe-agent-linux-$arch，请从安装包 bin 目录上传。" >&2; exit 1; }
+[[ -f "$binary_path" ]] || { echo "找不到 lightprobe-agent-linux-${arch}，请从安装包 bin 目录上传。" >&2; exit 1; }
 phase='安装采集程序'
 install -d -m 0755 /opt/lightprobe
 # Avoid replacing a running executable in place.
@@ -90,7 +90,7 @@ if [[ -f /etc/vnstat.conf ]] && grep -qE '^UseUTC[[:space:]]+1([[:space:]]|$)' /
 history_start=$(TZ="$zone" date +%F)
 if [[ "$previous_zone" != "$zone" ]]; then
   history_start=$(TZ="$zone" date -d tomorrow +%F)
-  echo "vnStat 统计时区将改为 $zone（不修改全局系统时区）。为避免混合旧时区数据，从 $history_start 开始接收日流量。"
+  echo "vnStat 统计时区将改为 ${zone}（不修改全局系统时区）。为避免混合旧时区数据，从 ${history_start} 开始接收日流量。"
 fi
 if [[ "$ID" == alpine ]]; then
   install -d -m 0755 /etc/conf.d

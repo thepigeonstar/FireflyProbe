@@ -195,3 +195,5 @@ All 78 Node tests pass. Rule ordering requires admin authentication/CSRF and val
 ## v0.2.21
 
 79 Node tests pass. Edit tests validate conflicting ports, immutable node ownership, blocking concurrent edits, POSIX deployment/rollback syntax, retaining config/history on failure, callback completion independent of list polling, atomic success/reset, preserving sort and other rules, and rejecting stale samples from the previous service identity. Chrome exercises the edit dialog through real local SSH transport with simulated shell completion, confirms new settings, zero monthly totals and empty history. Real remote systemd/OpenRC rollback execution was not run locally; tests verify command generation and state handling. Agent remains 0.2.2.
+
+Installer locale hotfix: braced variables adjacent to Chinese punctuation in timezone migration and OS/binary diagnostics. Real Bash execution of the timezone message passes with nounset in C and C.UTF-8 locales; five installer regression tests, syntax and ShellCheck pass. No uninstall or data reset is required.
