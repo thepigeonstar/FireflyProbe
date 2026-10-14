@@ -13,6 +13,7 @@ import {createAgentBatch} from './agent-batch.mjs';
 import {createForwarding,forwardURLs,gostVersion} from './forwarding.mjs';
 import {createForwardBatch} from './forward-batch.mjs';
 import {createForwardAlerts} from './forward-alerts.mjs';
+import {publicNodeName} from './public-name.mjs';
 import {trafficHistory} from './traffic-history.mjs';
 import { openStore, dayKey, validDate, dailyTotals } from './store.mjs';
 import { brandDefaults, brandView, validateBrand } from './brand.mjs';
@@ -48,13 +49,14 @@ function finite(v, min, max, name, integer = false) {
 }
 function textValue(v, max, name) { if (typeof v !== 'string' || v.length > max || /[\x00-\x1f]/.test(v)) fail(400, `${name} 格式无效`); return v.trim(); }
 function nodeFields(data) {
+  if(data.public_show_name!==undefined&&![true,false,0,1].includes(data.public_show_name))fail(400,'公开名称开关无效');
   const n = {
     name: textValue(data.name, 80, '名称'), group_name: textValue(data.group_name ?? '', 40, '分组'),
     interface: textValue(data.interface ?? '', 40, '网卡'), sort: finite(data.sort ?? 0, -10000, 10000, '排序', true),
     quota: finite(data.quota ?? 0, 0, 8e15, '流量额度', true), billing_day: finite(data.billing_day ?? 1, 1, 31, '结算日', true),
     billing_mode: data.billing_mode ?? 'sum', expires: data.expires ?? '', enabled: data.enabled === false || data.enabled === 0 ? 0 : 1,
     cost_amount:finite(data.cost_amount??0,0,1e9,'付款金额'),cost_currency:textValue(data.cost_currency??'CNY',3,'币种').toUpperCase(),cost_months:finite(data.cost_months??1,1,120,'付款周期',true),cost_active:data.cost_active===false||data.cost_active===0?0:1,
-    alerts_enabled:data.alerts_enabled===false||data.alerts_enabled===0?0:1,maintenance_until:finite(data.maintenance_until??0,0,1e12,'维护时间',true),public_visible:data.public_visible===true||data.public_visible===1?1:0
+    alerts_enabled:data.alerts_enabled===false||data.alerts_enabled===0?0:1,maintenance_until:finite(data.maintenance_until??0,0,1e12,'维护时间',true),public_visible:data.public_visible===true||data.public_visible===1?1:0,public_show_name:data.public_show_name===true||data.public_show_name===1?1:0
   };
   if (!n.name || (n.interface && !/^[a-zA-Z0-9_.:@-]+$/.test(n.interface)) || !['rx','tx','sum','max'].includes(n.billing_mode) || (n.expires && !validDate(n.expires))) fail(400, '节点配置无效');
   if(!/^[A-Z]{3}$/.test(n.cost_currency)||Math.abs(n.cost_amount*100-Math.round(n.cost_amount*100))>0.0001)fail(400,'金额最多两位小数，币种需为三位货币代码');
@@ -158,16 +160,16 @@ export async function createApp(options = {}) {
   const publicHistoryCache=new Map();
   function publicHistory(id='network',admin=false){
     if(!admin&&(!settings.public_enabled||!settings.public_show_metrics))fail(404,'公开网速记录尚未启用');
-    const node=id==='network'?null:db.prepare('SELECT id,name,public_visible FROM nodes WHERE id=?').get(id);
+    const node=id==='network'?null:db.prepare('SELECT id,name,public_visible,public_show_name,country_override,country_code FROM nodes WHERE id=?').get(id);
     if(id!=='network'&&(!node||(!admin&&!node.public_visible)))fail(404,'公开服务器不存在');
-    const visibleNodes=getNodes().filter(n=>(admin||n.public_visible)&&(node?n.id===id:n.enabled)),signature=JSON.stringify(visibleNodes.map(n=>[n.id,n.name,n.enabled]));
+    const visibleNodes=getNodes().filter(n=>(admin||n.public_visible)&&(node?n.id===id:n.enabled)),signature=JSON.stringify(visibleNodes.map(n=>[n.id,n.name,n.enabled,n.public_show_name,n.country_override,n.country_code]));
     const cacheKey=(admin?'admin:':'')+id,stamp=now(),cached=publicHistoryCache.get(cacheKey);if(cached&&stamp-cached.stamp<15&&cached.signature===signature)return cached.data;
     const start=stamp-86400,filter=node?'n.id=?'+(admin?'':' AND n.public_visible=1'):(admin?'n.enabled=1':'n.public_visible=1 AND n.enabled=1'),params=node?[start,stamp,id]:[start,stamp];
     const rows=db.prepare('SELECT m.minute,SUM(m.rx/m.count) rx,SUM(m.tx/m.count) tx FROM minutes m JOIN nodes n ON n.id=m.node_id WHERE m.minute>=? AND m.minute<=? AND '+filter+' GROUP BY m.minute ORDER BY m.minute').all(...params);
     const byMinute=new Map(rows.map(row=>[row.minute,{...row}]));
     const visible=new Set(visibleNodes.map(n=>n.id));
     for(const [nodeId,live] of latest){if(!visible.has(nodeId)||live.minute<start||live.minute>stamp)continue;const stored=db.prepare('SELECT rx/count rx,tx/count tx FROM minutes WHERE node_id=? AND minute=?').get(nodeId,live.minute),a=live.aggregate,row=byMinute.get(live.minute)||{minute:live.minute,rx:0,tx:0};row.rx+=a.rx/a.count-(stored?.rx||0);row.tx+=a.tx/a.count-(stored?.tx||0);byMinute.set(live.minute,row);}
-    const data={brand:brandView(settings),public_path:settings.public_path,id:node?.id??'network',name:node?.name??'当前总网速',hours:24,start,server_time:stamp,minutes:[...byMinute.values()].sort((a,b)=>a.minute-b.minute).map(r=>({minute:r.minute,rx:Math.max(0,r.rx),tx:Math.max(0,r.tx)}))};data.timezone=settings.timezone;data.chart_svg=networkChart(data);data.peak=Math.max(0,...data.minutes.map(r=>r.rx+r.tx));data.average=data.minutes.length?data.minutes.reduce((sum,r)=>sum+r.rx+r.tx,0)/data.minutes.length:0;publicHistoryCache.set(cacheKey,{stamp,data,signature});if(publicHistoryCache.size>201)publicHistoryCache.delete(publicHistoryCache.keys().next().value);return data;
+    const data={brand:brandView(settings),public_path:settings.public_path,id:node?.id??'network',name:node?(admin?node.name:publicNodeName(node)):'当前总网速',hours:24,start,server_time:stamp,minutes:[...byMinute.values()].sort((a,b)=>a.minute-b.minute).map(r=>({minute:r.minute,rx:Math.max(0,r.rx),tx:Math.max(0,r.tx)}))};data.timezone=settings.timezone;data.chart_svg=networkChart(data);data.peak=Math.max(0,...data.minutes.map(r=>r.rx+r.tx));data.average=data.minutes.length?data.minutes.reduce((sum,r)=>sum+r.rx+r.tx,0)/data.minutes.length:0;publicHistoryCache.set(cacheKey,{stamp,data,signature});if(publicHistoryCache.size>201)publicHistoryCache.delete(publicHistoryCache.keys().next().value);return data;
   }
   function publicChart(id){const {minutes,...chart}=publicHistory(id);return chart;}
   async function telegram(message) {
@@ -345,7 +347,7 @@ export async function createApp(options = {}) {
       const publicNodeHistory=/^\/api\/public\/nodes\/([a-f0-9-]{36})\/history$/.exec(path);if(method==='GET'&&publicNodeHistory)return send(res,200,publicChart(publicNodeHistory[1]));
       if(method==='GET'&&path==='/api/public') {
         if(!settings.public_enabled)fail(404,'公开展示尚未启用');
-        if(!publicCache||now()-publicCache.created>=5){const nodes=snapshot().filter(n=>n.public_visible).map(n=>({id:n.id,name:n.name,system:settings.public_show_system?n.system:undefined,group_name:n.group_name,status:n.status,last_seen:n.last_seen,country_code:/^[A-Z]{2}$/.test(n.country_code)?n.country_code:'',metrics:settings.public_show_metrics&&n.metrics?{rx_speed:n.metrics.rx_speed,tx_speed:n.metrics.tx_speed,cpu:n.metrics.cpu,uptime:n.metrics.uptime,mem_percent:n.metrics.mem_total?n.metrics.mem_used/n.metrics.mem_total*100:0,disk_percent:n.metrics.disk_total?n.metrics.disk_used/n.metrics.disk_total*100:0}:undefined,traffic:settings.public_show_traffic?{today:n.traffic.today.rx+n.traffic.today.tx,month:n.traffic.month.rx+n.traffic.month.tx}:undefined}));publicCache={created:now(),payload:{brand:brandView(settings),public_path:settings.public_path,nodes,network:settings.public_show_metrics?nodes.filter(n=>n.status!=='disabled').reduce((total,n)=>({rx:total.rx+(n.metrics?.rx_speed||0),tx:total.tx+(n.metrics?.tx_speed||0)}),{rx:0,tx:0}):undefined,show_network:settings.public_show_metrics,server_time:now()}};}
+        if(!publicCache||now()-publicCache.created>=5){const nodes=snapshot().filter(n=>n.public_visible).map(n=>({id:n.id,name:publicNodeName(n),system:settings.public_show_system?n.system:undefined,group_name:n.group_name,status:n.status,last_seen:n.last_seen,country_code:/^[A-Z]{2}$/.test(n.country_code)?n.country_code:'',metrics:settings.public_show_metrics&&n.metrics?{rx_speed:n.metrics.rx_speed,tx_speed:n.metrics.tx_speed,cpu:n.metrics.cpu,uptime:n.metrics.uptime,mem_percent:n.metrics.mem_total?n.metrics.mem_used/n.metrics.mem_total*100:0,disk_percent:n.metrics.disk_total?n.metrics.disk_used/n.metrics.disk_total*100:0}:undefined,traffic:settings.public_show_traffic?{today:n.traffic.today.rx+n.traffic.today.tx,month:n.traffic.month.rx+n.traffic.month.tx}:undefined}));publicCache={created:now(),payload:{brand:brandView(settings),public_path:settings.public_path,nodes,network:settings.public_show_metrics?nodes.filter(n=>n.status!=='disabled').reduce((total,n)=>({rx:total.rx+(n.metrics?.rx_speed||0),tx:total.tx+(n.metrics?.tx_speed||0)}),{rx:0,tx:0}):undefined,show_network:settings.public_show_metrics,server_time:now()}};}
         return send(res,200,publicCache.payload);
       }
       // Only these public program files are downloadable; configuration and tokens are never served here.
@@ -429,7 +431,7 @@ export async function createApp(options = {}) {
         const sshRoute=/^\/api\/nodes\/([a-f0-9-]{36})\/ssh\/(probe|trust|test|deploy)$/.exec(path);
         if(sshRoute&&method==='POST'){const [unused,id,action]=sshRoute;if(action==='probe')return send(res,200,await ssh.probe(id));if(action==='trust'){const input=await body(req);ssh.trust(id,input.fingerprint);return send(res,200,{ok:true});}if(action==='test')return send(res,200,await ssh.test(id));return send(res,202,ssh.deploy(id));}
         const jobRoute=/^\/api\/ssh\/jobs\/([a-f0-9-]{36})$/.exec(path);if(jobRoute&&method==='GET')return send(res,200,ssh.status(jobRoute[1]));
-        if(path==='/api/nodes'&&method==='GET') {const rates=fx.read();const {rates:unused,...fxInfo}=rates;return send(res,200,{nodes:snapshot(),settings:safeSettings(),cost_summary:costSummary(getNodes(),rates),fx_info:fxInfo,server_time:now(),version:'0.2.25',agent_version:'0.2.2'});}
+        if(path==='/api/nodes'&&method==='GET') {const rates=fx.read();const {rates:unused,...fxInfo}=rates;return send(res,200,{nodes:snapshot(),settings:safeSettings(),cost_summary:costSummary(getNodes(),rates),fx_info:fxInfo,server_time:now(),version:'0.2.26',agent_version:'0.2.2'});}
         const adminNetwork=/^\/api\/nodes\/([a-f0-9-]{36})\/network-history$/.exec(path);if(adminNetwork&&method==='GET')return send(res,200,publicHistory(adminNetwork[1],true));
         if(path==='/api/network/history'&&method==='GET')return send(res,200,publicHistory('network',true));
         if(path==='/api/costs'&&method==='GET')return send(res,200,{...costSummary(getNodes(),fx.read()),fx:fx.read()});
@@ -503,6 +505,6 @@ export async function createApp(options = {}) {
 function formatBytes(bytes) {const units=['B','KiB','MiB','GiB','TiB'];let i=0;while(bytes>=1024&&i<4){bytes/=1024;i++;}return bytes.toFixed(1)+' '+units[i];}
 if(process.argv[1] && import.meta.url===pathToFileURL(resolve(process.argv[1])).href) {
   const app=await createApp();
-  app.server.listen(Number(process.env.PORT ?? 8080),process.env.HOST ?? '127.0.0.1',()=>console.log(`Firefly Probe 0.2.25 listening on ${process.env.HOST ?? '127.0.0.1'}:${process.env.PORT ?? 8080}`));
+  app.server.listen(Number(process.env.PORT ?? 8080),process.env.HOST ?? '127.0.0.1',()=>console.log(`Firefly Probe 0.2.26 listening on ${process.env.HOST ?? '127.0.0.1'}:${process.env.PORT ?? 8080}`));
   let stopping=false;for(const sig of ['SIGINT','SIGTERM']) process.on(sig,async()=>{if(stopping)return;stopping=true;await app.close();process.exit(0);});
 }

@@ -12,7 +12,7 @@ test('公开24小时网速：只聚合公开启用节点、先求节点均值、
   try{
     assert.equal((await call('/api/public/history')).status,404);assert.equal((await call('/api/network/history')).status,401);assert.equal((await call('/api/nodes/00000000-0000-0000-0000-000000000000/network-history')).status,401);
     const login=await call('/admin/api/login','POST',{username:'admin',password:'public-history-test-2026'});headers={...headers,Cookie:login.response.headers.get('set-cookie').split(';')[0],'X-CSRF-Token':login.body.csrf};
-    const create=async(name,visible,enabled=true)=>(await call('/api/nodes','POST',{name,public_visible:visible,enabled})).body;
+    const create=async(name,visible,enabled=true)=>(await call('/api/nodes','POST',{name,public_visible:visible,public_show_name:true,enabled})).body;
     const a=await create('公开甲',true),b=await create('公开乙',true),hidden=await create('隐藏机器',false),disabled=await create('已停用',true,false);
     const minute=Math.floor(Date.now()/60000)*60-120,insert=app.db.prepare('INSERT INTO minutes VALUES(?,?,?,?,?,?,?)');insert.run(a.id,minute,100,200,99,99,2);insert.run(b.id,minute,90,45,99,99,3);insert.run(hidden.id,minute,1000000,1000000,99,99,1);insert.run(disabled.id,minute,111,222,99,99,1);insert.run(a.id,minute-86400,1,2,99,99,1);
     await call('/api/settings','PUT',{public_enabled:true,public_show_metrics:true});
