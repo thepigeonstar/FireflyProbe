@@ -30,7 +30,7 @@ if [ ! -x /opt/firefly-forward/gost-${gostVersion} ]; then
  temporary=$(mktemp -d)
  trap 'rm -rf -- "$temporary"' EXIT
  archive="gost_${gostVersion}_linux_$arch.tar.gz"
- curl --proto '=https' --tlsv1.2 -fsS --connect-timeout 15 --max-time 300 "https://github.com/go-gost/gost/releases/download/v${gostVersion}/$archive" -o "$temporary/gost.tar.gz"
+ curl --proto '=https' --proto-redir '=https' --tlsv1.2 -fsSL --connect-timeout 15 --max-time 300 "https://github.com/go-gost/gost/releases/download/v${gostVersion}/$archive" -o "$temporary/gost.tar.gz"
  printf '%s  %s\\n' "$expected" "$temporary/gost.tar.gz" | sha256sum -c -
  tar -xzf "$temporary/gost.tar.gz" -C "$temporary" gost
  install -m 0755 "$temporary/gost" /opt/firefly-forward/gost-${gostVersion}
