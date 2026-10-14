@@ -61,13 +61,13 @@ export function createSSH({db,vault,publicURL,bootstrap,ClientClass=Client}) {
   const busy=id=>[...jobs.values()].some(j=>j.node_id===id&&j.status==='running');
   return {
     busy,
-    runManaged(id,script){
+    runManaged(id,script,onComplete){
       const n=node(id);
       if(!n.ssh_fingerprint||!n.ssh_password)throw error(400,'请先配置 SSH、测试连接并确认指纹');
       if(busy(id)||[...jobs.values()].filter(j=>j.status==='running').length>=2)throw error(409,'已有 SSH 任务正在进行，请稍后重试');
       const password=vault.open(n.ssh_password,id),job={id:randomUUID(),node_id:id,status:'running',created:Math.floor(Date.now()/1000),finished:0,log:'正在连接 SSH…\n'};
       jobs.set(job.id,job);for(const [key,value] of jobs)if(value.status!=='running'&&jobs.size>100)jobs.delete(key);
-      (async()=>{let c;try{c=await connect(n);const code=await exec(c,n.ssh_user==='root'?'sh -s':'sudo -n sh -s',script,600000,line=>{job.log=(job.log+line.replaceAll(password,'[已隐藏]').replace(/[\x00-\x08\x0b-\x1f\x7f]/g,'')+'\n').slice(-65536);});job.status=code===0?'success':'failed';job.log+=code===0?'操作完成。\n':`操作失败（退出码 ${code??'未知'}）。\n`;}catch(e){job.status='failed';job.log+=(e.status?e.message:friendly(e))+'\n';}finally{c?.end();job.finished=Math.floor(Date.now()/1000);}})();
+      (async()=>{let c;try{c=await connect(n);const code=await exec(c,n.ssh_user==='root'?'sh -s':'sudo -n sh -s',script,600000,line=>{job.log=(job.log+line.replaceAll(password,'[已隐藏]').replace(/[\x00-\x08\x0b-\x1f\x7f]/g,'')+'\n').slice(-65536);});job.status=code===0?'success':'failed';job.log+=code===0?'操作完成。\n':`操作失败（退出码 ${code??'未知'}）。\n`;}catch(e){job.status='failed';job.log+=(e.status?e.message:friendly(e))+'\n';}finally{c?.end();job.finished=Math.floor(Date.now()/1000);try{onComplete?.({...job});}catch{job.status='failed';job.log+='无法保存操作结果，请核对远端服务状态。\n';}}})();
       return {...job};
     },
     async draftProbe(input,owner){

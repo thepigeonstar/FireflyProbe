@@ -191,3 +191,7 @@ All 77 Node tests pass. Daily tests cover Shanghai midnight, duplicate samples, 
 ## v0.2.20
 
 All 78 Node tests pass. Rule ordering requires admin authentication/CSRF and validates a complete, unique rule list belonging to the selected node, persists atomically and survives master restart. Chrome performs actual drag/drop, verifies the navigation order, notification location inside Settings and at least 8px between Settings and Plugins. PowerShell uploader parses successfully; a local Git fixture verifies removal/staging only of tracked root UPDATE-v*.md notes with unrelated files preserved. Versioned notes are consolidated, with links and installer/package references updated to CHANGELOG.md. Agent remains 0.2.2. No remote push or VPS update was performed.
+
+## v0.2.21
+
+79 Node tests pass. Edit tests validate conflicting ports, immutable node ownership, blocking concurrent edits, POSIX deployment/rollback syntax, retaining config/history on failure, callback completion independent of list polling, atomic success/reset, preserving sort and other rules, and rejecting stale samples from the previous service identity. Chrome exercises the edit dialog through real local SSH transport with simulated shell completion, confirms new settings, zero monthly totals and empty history. Real remote systemd/OpenRC rollback execution was not run locally; tests verify command generation and state handling. Agent remains 0.2.2.
