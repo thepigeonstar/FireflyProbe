@@ -136,11 +136,11 @@ export function createForwarding(db,ssh,timezone=()=> 'Asia/Shanghai'){
  const erase=id=>{db.prepare('DELETE FROM settings WHERE key=?').run(key(id));for(const prefix of ['forward_month:','forward_day:'])db.prepare('DELETE FROM settings WHERE key LIKE ?').run(prefix+id+':%');};
  const installed=r=>r.installed??(['running','stopped'].includes(r.state)||Boolean(r.counter)||String(r.last_log||'').includes('FIREFLY_FORWARD_ACTIVE'));
  const monthKey=(id,month)=>'forward_month:'+id+':'+month;
- function traffic(r){const month=dayKey(new Date(),timezone()).slice(0,7),saved=db.prepare('SELECT value FROM settings WHERE key=?').get(monthKey(r.id,month));return {month,...(saved?JSON.parse(saved.value):{rx:0,tx:0}),sampled:r.counter?.sampled??0,available:r.metrics_available??false};}
+ function traffic(r){const month=dayKey(new Date(),timezone()).slice(0,7),saved=db.prepare('SELECT value FROM settings WHERE key=?').get(monthKey(r.id,month));return {month,...(saved?JSON.parse(saved.value):{rx:0,tx:0}),sampled:r.counter?.sampled??0,available:r.metrics_available??false,counter_error:r.counter_error||''};}
  function history(id){if(!records().some(r=>r.id===id))fail(404,'规则不存在');return db.prepare("SELECT key,value FROM settings WHERE key LIKE ? ORDER BY key DESC LIMIT 24").all('forward_month:'+id+':%').map(row=>({month:row.key.slice(-7),...JSON.parse(row.value)}));}
  function dailyHistory(id,month){if(!/^\d{4}-(0[1-9]|1[0-2])$/.test(month))fail(400,'月份格式无效');const months=history(id),total=months.find(m=>m.month===month)??{rx:0,tx:0};const days=db.prepare("SELECT key,value FROM settings WHERE key LIKE ? ORDER BY key DESC").all('forward_day:'+id+':'+month+'-%').map(row=>({date:row.key.slice(-10),...JSON.parse(row.value)}));return {month,total,days,unassigned:{rx:Math.max(0,total.rx-days.reduce((sum,d)=>sum+d.rx,0)),tx:Math.max(0,total.tx-days.reduce((sum,d)=>sum+d.tx,0))}};}
- function summary(at=new Date()){
-  const zone=timezone(),today=dayKey(at,zone),yesterday=new Date(Date.parse(today+'T12:00:00Z')-86400000).toISOString().slice(0,10),rules=records();
+ function summary(at=new Date(),nodeID=''){
+  const zone=timezone(),today=dayKey(at,zone),yesterday=new Date(Date.parse(today+'T12:00:00Z')-86400000).toISOString().slice(0,10),rules=records().filter(r=>!nodeID||r.node_id===nodeID);
   const total=date=>{const sum={date,rx:0,tx:0};for(const r of rules){const row=db.prepare('SELECT value FROM settings WHERE key=?').get('forward_day:'+r.id+':'+date);if(row){const d=JSON.parse(row.value);sum.rx+=d.rx;sum.tx+=d.tx;}}return {...sum,total:sum.rx+sum.tx};};
   return {timezone:zone,rule_count:rules.length,today:total(today),yesterday:total(yesterday)};
  }
@@ -151,7 +151,7 @@ export function createForwarding(db,ssh,timezone=()=> 'Asia/Shanghai'){
   r.last_sampled=s.sampled;
   if(!s.available){r.metrics_available=false;save(r);continue;}
   for(const field of ['rx','tx','errors'])if(!Number.isSafeInteger(s[field])||s[field]<0||s[field]>8e15)fail(400,'转发计数无效');
-  const old=r.counter,same=old?.epoch===s.epoch,delta=k=>same&&s[k]>=old[k]?s[k]-old[k]:s[k];const rx=delta('rx'),tx=delta('tx'),errors=delta('errors');
+  const old=r.counter,same=old?.epoch===s.epoch;if(same&&['rx','tx','errors'].some(k=>s[k]<old[k])){r.metrics_available=false;r.counter_error='同一进程的累计计数回退，保留原基线，暂不累加此样本';save(r);continue;}delete r.counter_error;const delta=k=>same?s[k]-old[k]:s[k];const rx=delta('rx'),tx=delta('tx'),errors=delta('errors');
   const date=dayKey(new Date(s.sampled*1000),timezone()),month=date.slice(0,7),mkey=monthKey(r.id,month),row=db.prepare('SELECT value FROM settings WHERE key=?').get(mkey),totals=row?JSON.parse(row.value):{rx:0,tx:0};totals.rx+=rx;totals.tx+=tx;
   db.prepare('INSERT INTO settings VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value').run(mkey,JSON.stringify(totals));
   const dkey='forward_day:'+r.id+':'+date,oldDay=db.prepare('SELECT value FROM settings WHERE key=?').get(dkey),day=oldDay?JSON.parse(oldDay.value):{rx:0,tx:0};day.rx+=rx;day.tx+=tx;db.prepare('INSERT INTO settings VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value').run(dkey,JSON.stringify(day));

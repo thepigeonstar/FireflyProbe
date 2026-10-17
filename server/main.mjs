@@ -14,6 +14,9 @@ import {createForwarding,forwardURLs,gostVersion} from './forwarding.mjs';
 import {createForwardBatch} from './forward-batch.mjs';
 import {createForwardAlerts} from './forward-alerts.mjs';
 import {publicNodeName} from './public-name.mjs';
+import {createForwardGroups} from './forward-groups.mjs';
+import {forwardServerHistory} from './forward-history.mjs';
+import {dailyReportLines} from './daily-report.mjs';
 import {trafficHistory} from './traffic-history.mjs';
 import { openStore, dayKey, validDate, dailyTotals } from './store.mjs';
 import { brandDefaults, brandView, validateBrand } from './brand.mjs';
@@ -114,6 +117,7 @@ export async function createApp(options = {}) {
   const pluginAccess=createPluginAccess(db,plugins),pluginCalls=new Map();
   const ssh=createSSH({db,vault,publicURL,bootstrap:readFileSync(fileURLToPath(new URL('../agent/entry.sh',import.meta.url)),'utf8'),ClientClass:options.sshClient});
   const forwarding=createForwarding(db,ssh,()=>settings.timezone);
+  const forwardGroups=createForwardGroups(db);
   const forwardAlerts=createForwardAlerts(db);
   const forwardBatch=createForwardBatch(forwarding,ssh,()=>db.prepare('SELECT * FROM nodes ORDER BY sort,name').all());
   const agentBatch=createAgentBatch(ssh,()=>db.prepare('SELECT * FROM nodes ORDER BY sort,name').all());
@@ -202,7 +206,7 @@ export async function createApp(options = {}) {
       const clock = Object.fromEntries(new Intl.DateTimeFormat('en-GB',{timeZone:settings.timezone,hour:'2-digit',minute:'2-digit',hourCycle:'h23'}).formatToParts(new Date()).map(x=>[x.type,x.value]));
       if (settings.report_enabled && Number(clock.hour)*60+Number(clock.minute) >= settings.report_hour*60+settings.report_minute) {
         const yesterday = new Date(Date.parse(today)-86400000).toISOString().slice(0,10);
-        const lines = nodes.filter(n=>n.enabled&&notificationSelected(settings,'report',n.id)).map(n=>`${n.status==='online'?'🟢':'🔴'} ${n.name}\n昨日 ${formatBytes(n.traffic.yesterday.rx+n.traffic.yesterday.tx)} · 周期 ${formatBytes(n.traffic.measured)}${n.quota ? ' / '+formatBytes(n.quota):''}${n.history_error || !n.history_seen || stamp-n.history_seen>900 ? '\n⚠️ 流量数据未同步或异常':''}`);
+        const lines = dailyReportLines(nodes.filter(n=>n.enabled&&notificationSelected(settings,'report',n.id)),stamp);
         let message = `📊 ${settings.brand_name} 日报 · ${yesterday}\n统计时区：${settings.timezone}`, part = 0;
         for (const line of lines) { if (message.length+line.length>3000) { enqueue(`daily:${today}:${part++}`,message); message='📊 日报（续）'; } message+='\n\n'+line; }
         if(lines.length)enqueue(`daily:${today}:${part}`,message);
@@ -385,14 +389,20 @@ export async function createApp(options = {}) {
         if(path==='/api/agents/batch-update'&&method==='GET')return send(res,200,agentBatch.view());
         if(path==='/api/agents/batch-update'&&method==='POST'){if(forwardBatch.busy)fail(409,'转发安装 / 更新队列正在执行，请稍后重试');return send(res,202,agentBatch.start());}
         if(path==='/api/forwarding/batch'&&method==='GET')return send(res,200,forwardBatch.view());
-        if(path==='/api/forwarding/batch'&&method==='POST'){if(agentBatch.busy)fail(409,'采集端更新队列正在执行，请稍后重试');const data=await body(req);if(!data||typeof data!=='object'||Array.isArray(data))fail(400,'请求格式无效');return send(res,202,forwardBatch.start(data.node_id??''));}
+        if(path==='/api/forwarding/batch'&&method==='POST'){if(agentBatch.busy)fail(409,'采集端更新队列正在执行，请稍后重试');const data=await body(req);if(!data||typeof data!=='object'||Array.isArray(data))fail(400,'请求格式无效');return send(res,202,forwardBatch.start(data.node_id??'',data.group_id?forwardGroups.scope(data.group_id):null));}
         if(path==='/api/forwarding/alerts'&&method==='GET')return send(res,200,forwardAlerts.config());
         if(path==='/api/forwarding/alerts'&&method==='PUT')return send(res,200,forwardAlerts.save(await body(req)));
         if(path.startsWith('/api/forwarding')&&['POST','PUT','DELETE'].includes(method)&&forwardBatch.busy)fail(409,'转发安装 / 更新队列正在执行，请完成后再修改规则');
+        if(path==='/api/forwarding/traffic'&&method==='GET')return send(res,200,forwardServerHistory(db,settings.timezone,new URL(req.url,'http://localhost').searchParams));
+        if(path==='/api/forwarding/groups'&&method==='GET')return send(res,200,forwardGroups.list());
+        if(path==='/api/forwarding/groups'&&method==='POST')return send(res,201,forwardGroups.write(await body(req)));
+        const forwardGroupMatch=/^\/api\/forwarding\/groups\/([a-f0-9-]{36})$/.exec(path);
+        if(forwardGroupMatch&&method==='PUT')return send(res,200,forwardGroups.write(await body(req),forwardGroupMatch[1]));
+        if(forwardGroupMatch&&method==='DELETE')return send(res,200,forwardGroups.remove(forwardGroupMatch[1]));
         if(path==='/api/forwarding/copy'&&method==='POST')return send(res,201,forwarding.copy(await body(req)));
         const forwardingHistory=/^\/api\/forwarding\/([a-f0-9-]{36})\/history$/.exec(path);if(forwardingHistory&&method==='GET'){const month=new URL(req.url,'http://localhost').searchParams.get('month');return send(res,200,{...(month?forwarding.dailyHistory(forwardingHistory[1],month):{months:forwarding.history(forwardingHistory[1])}),timezone:settings.timezone});}
         if(path==='/api/forwarding/order'&&method==='POST'){const data=await body(req);return send(res,200,forwarding.reorder(data.node_id,data.ids));}
-        if(path==='/api/forwarding'&&method==='GET'){const rules=forwarding.list();return send(res,200,{rules:rules.map(r=>({...r,urls:forwardURLs(r)})),nodes:snapshot().map(n=>({id:n.id,name:n.name,status:n.status,country_code:n.country_code})),events:forwardAlerts.history(),batch:forwardBatch.view(),gost_version:gostVersion,summary:forwarding.summary()});}
+        if(path==='/api/forwarding'&&method==='GET'){const rules=forwarding.list(),all=snapshot(),involved=new Set(rules.map(r=>r.node_id)),included=all.filter(n=>n.enabled&&involved.has(n.id)),today=included.reduce((t,n)=>({rx:t.rx+n.traffic.today.rx,tx:t.tx+n.traffic.today.tx}),{rx:0,tx:0});return send(res,200,{rules:rules.map(r=>({...r,urls:forwardURLs(r)})),nodes:all.map(n=>({id:n.id,name:n.name,enabled:n.enabled,status:n.status,country_code:n.country_code,today:n.traffic.today,history_seen:n.history_seen,history_error:n.history_error,history_timezone:n.history_timezone,gost_today:forwarding.summary(undefined,n.id).today})),groups:forwardGroups.list(),interface_summary:{timezone:settings.timezone,server_count:included.length,today:{...today,total:today.rx+today.tx},stale_count:included.filter(n=>!n.history_seen||now()-n.history_seen>900||n.history_error||n.history_timezone!==settings.timezone).length},events:forwardAlerts.history(),batch:forwardBatch.view(),gost_version:gostVersion,summary:forwarding.summary()});}
         if(path==='/api/forwarding'&&method==='POST')return send(res,201,forwarding.add(await body(req)));
         const forwardingEdit=/^\/api\/forwarding\/([a-f0-9-]{36})$/.exec(path);if(forwardingEdit&&method==='PUT')return send(res,202,forwarding.update(forwardingEdit[1],await body(req)));
         const forwardingAction=/^\/api\/forwarding\/([a-f0-9-]{36})\/(start|resume|stop|status|remove)$/.exec(path);
@@ -431,7 +441,7 @@ export async function createApp(options = {}) {
         const sshRoute=/^\/api\/nodes\/([a-f0-9-]{36})\/ssh\/(probe|trust|test|deploy)$/.exec(path);
         if(sshRoute&&method==='POST'){const [unused,id,action]=sshRoute;if(action==='probe')return send(res,200,await ssh.probe(id));if(action==='trust'){const input=await body(req);ssh.trust(id,input.fingerprint);return send(res,200,{ok:true});}if(action==='test')return send(res,200,await ssh.test(id));return send(res,202,ssh.deploy(id));}
         const jobRoute=/^\/api\/ssh\/jobs\/([a-f0-9-]{36})$/.exec(path);if(jobRoute&&method==='GET')return send(res,200,ssh.status(jobRoute[1]));
-        if(path==='/api/nodes'&&method==='GET') {const rates=fx.read();const {rates:unused,...fxInfo}=rates;return send(res,200,{nodes:snapshot(),settings:safeSettings(),cost_summary:costSummary(getNodes(),rates),fx_info:fxInfo,server_time:now(),version:'0.2.26',agent_version:'0.2.2'});}
+        if(path==='/api/nodes'&&method==='GET') {const rates=fx.read();const {rates:unused,...fxInfo}=rates;return send(res,200,{nodes:snapshot(),settings:safeSettings(),cost_summary:costSummary(getNodes(),rates),fx_info:fxInfo,server_time:now(),version:'0.2.27',agent_version:'0.2.2'});}
         const adminNetwork=/^\/api\/nodes\/([a-f0-9-]{36})\/network-history$/.exec(path);if(adminNetwork&&method==='GET')return send(res,200,publicHistory(adminNetwork[1],true));
         if(path==='/api/network/history'&&method==='GET')return send(res,200,publicHistory('network',true));
         if(path==='/api/costs'&&method==='GET')return send(res,200,{...costSummary(getNodes(),fx.read()),fx:fx.read()});
@@ -505,6 +515,6 @@ export async function createApp(options = {}) {
 function formatBytes(bytes) {const units=['B','KiB','MiB','GiB','TiB'];let i=0;while(bytes>=1024&&i<4){bytes/=1024;i++;}return bytes.toFixed(1)+' '+units[i];}
 if(process.argv[1] && import.meta.url===pathToFileURL(resolve(process.argv[1])).href) {
   const app=await createApp();
-  app.server.listen(Number(process.env.PORT ?? 8080),process.env.HOST ?? '127.0.0.1',()=>console.log(`Firefly Probe 0.2.26 listening on ${process.env.HOST ?? '127.0.0.1'}:${process.env.PORT ?? 8080}`));
+  app.server.listen(Number(process.env.PORT ?? 8080),process.env.HOST ?? '127.0.0.1',()=>console.log(`Firefly Probe 0.2.27 listening on ${process.env.HOST ?? '127.0.0.1'}:${process.env.PORT ?? 8080}`));
   let stopping=false;for(const sig of ['SIGINT','SIGTERM']) process.on(sig,async()=>{if(stopping)return;stopping=true;await app.close();process.exit(0);});
 }
