@@ -17,6 +17,9 @@ import {publicNodeName} from './public-name.mjs';
 import {createForwardGroups} from './forward-groups.mjs';
 import {forwardServerHistory} from './forward-history.mjs';
 import {dailyReportLines} from './daily-report.mjs';
+import {forwardDiagnosticScript} from './forward-diagnostic.mjs';
+import {renewOnlineNodes} from './auto-renew.mjs';
+import {expiryView,renewManually} from './manual-renew.mjs';
 import {trafficHistory} from './traffic-history.mjs';
 import { openStore, dayKey, validDate, dailyTotals } from './store.mjs';
 import { brandDefaults, brandView, validateBrand } from './brand.mjs';
@@ -53,7 +56,9 @@ function finite(v, min, max, name, integer = false) {
 function textValue(v, max, name) { if (typeof v !== 'string' || v.length > max || /[\x00-\x1f]/.test(v)) fail(400, `${name} 格式无效`); return v.trim(); }
 function nodeFields(data) {
   if(data.public_show_name!==undefined&&![true,false,0,1].includes(data.public_show_name))fail(400,'公开名称开关无效');
+  if(data.auto_renew!==undefined&&![true,false,0,1].includes(data.auto_renew))fail(400,'自动续期开关无效');
   const n = {
+    auto_renew:data.auto_renew===false||data.auto_renew===0?0:1,auto_renew_months:finite(data.auto_renew_months??1,1,120,'自动续期月数',true),
     name: textValue(data.name, 80, '名称'), group_name: textValue(data.group_name ?? '', 40, '分组'),
     interface: textValue(data.interface ?? '', 40, '网卡'), sort: finite(data.sort ?? 0, -10000, 10000, '排序', true),
     quota: finite(data.quota ?? 0, 0, 8e15, '流量额度', true), billing_day: finite(data.billing_day ?? 1, 1, 31, '结算日', true),
@@ -122,7 +127,7 @@ export async function createApp(options = {}) {
   const forwardBatch=createForwardBatch(forwarding,ssh,()=>db.prepare('SELECT * FROM nodes ORDER BY sort,name').all());
   const agentBatch=createAgentBatch(ssh,()=>db.prepare('SELECT * FROM nodes ORDER BY sort,name').all());
   function configuredNode(input,old={},id=old.id) {
-    const fields={...nodeFields({...old,...input}),...sshFields(input,old)};
+    const fields={...nodeFields({...old,...input}),...sshFields(input,old)};fields.renewal_anchor_day=fields.expires?(fields.expires!==old.expires?Number(fields.expires.slice(-2)):old.renewal_anchor_day||Number(fields.expires.slice(-2))):0;
     if(id&&forwarding.hasNode(id)&&(fields.ssh_host!==old.ssh_host||fields.ssh_port!==old.ssh_port||fields.ssh_user!==old.ssh_user))fail(409,'请先停止并删除转发规则，再更换 SSH 地址、端口或用户名');
     if(id&&input.ssh_clear===true&&forwarding.hasNode(id))fail(409,'请先停止并删除转发规则，再清除 SSH 密码');
     if(input.ssh_password!==undefined){if(typeof input.ssh_password!=='string'||input.ssh_password.length>1024||input.ssh_password.includes('\0'))fail(400,'SSH 密码格式无效');if(input.ssh_password)fields.ssh_password=vault.seal(input.ssh_password,id);}
@@ -158,6 +163,7 @@ export async function createApp(options = {}) {
       const { token_hash,ssh_password,agent_secret,country_ip, ...safe } = n;
       safe.ssh_configured=Boolean(ssh_password);
       safe.ssh_job=ssh.recent(n.id);
+      safe.expiry=expiryView(n,today);
       return { ...safe,system:live?.metrics?.system||db.prepare('SELECT value FROM settings WHERE key=?').get('node_system:'+n.id)?.value||'',country_code:safe.country_override||safe.country_code, last_version:live?.metrics?.version??n.last_version, last_seen: seen, status, metrics: status === 'online' ? live?.metrics ?? null : null, traffic: dailyTotals(db,n,today), cost:nodeCost(n,rates), expired: Boolean(n.expires && n.expires < today),maintenance:n.maintenance_until>now() };
     });
   };
@@ -187,7 +193,7 @@ export async function createApp(options = {}) {
     if (workerBusy || closed || restoring || now()<notificationGraceUntil) return;
     workerBusy = true;
     try {
-      const stamp = now(), today = dayKey(new Date(),settings.timezone), nodes = snapshot();
+      const stamp = now(), today = dayKey(new Date(),settings.timezone);let nodes = snapshot();if(renewOnlineNodes(db,nodes,settings.timezone,stamp).length){publicCache=null;nodes=snapshot();}
       forwardAlerts.observe(nodes,forwarding.list(),settings,enqueue,stamp);
       for (const n of nodes) {
         if(!n.enabled)continue;
@@ -399,6 +405,7 @@ export async function createApp(options = {}) {
         const forwardGroupMatch=/^\/api\/forwarding\/groups\/([a-f0-9-]{36})$/.exec(path);
         if(forwardGroupMatch&&method==='PUT')return send(res,200,forwardGroups.write(await body(req),forwardGroupMatch[1]));
         if(forwardGroupMatch&&method==='DELETE')return send(res,200,forwardGroups.remove(forwardGroupMatch[1]));
+        if(path==='/api/forwarding/diagnose'&&method==='POST'){const input=await body(req),n=getNodes().find(n=>n.id===input?.node_id);if(!n)fail(404,'服务器不存在');const rules=forwarding.list().filter(r=>r.node_id===n.id);if(!rules.length)fail(400,'该服务器没有转发规则');return send(res,202,ssh.runManaged(n.id,forwardDiagnosticScript(n.interface,rules.map(r=>r.id))));}
         if(path==='/api/forwarding/copy'&&method==='POST')return send(res,201,forwarding.copy(await body(req)));
         const forwardingHistory=/^\/api\/forwarding\/([a-f0-9-]{36})\/history$/.exec(path);if(forwardingHistory&&method==='GET'){const month=new URL(req.url,'http://localhost').searchParams.get('month');return send(res,200,{...(month?forwarding.dailyHistory(forwardingHistory[1],month):{months:forwarding.history(forwardingHistory[1])}),timezone:settings.timezone});}
         if(path==='/api/forwarding/order'&&method==='POST'){const data=await body(req);return send(res,200,forwarding.reorder(data.node_id,data.ids));}
@@ -441,7 +448,7 @@ export async function createApp(options = {}) {
         const sshRoute=/^\/api\/nodes\/([a-f0-9-]{36})\/ssh\/(probe|trust|test|deploy)$/.exec(path);
         if(sshRoute&&method==='POST'){const [unused,id,action]=sshRoute;if(action==='probe')return send(res,200,await ssh.probe(id));if(action==='trust'){const input=await body(req);ssh.trust(id,input.fingerprint);return send(res,200,{ok:true});}if(action==='test')return send(res,200,await ssh.test(id));return send(res,202,ssh.deploy(id));}
         const jobRoute=/^\/api\/ssh\/jobs\/([a-f0-9-]{36})$/.exec(path);if(jobRoute&&method==='GET')return send(res,200,ssh.status(jobRoute[1]));
-        if(path==='/api/nodes'&&method==='GET') {const rates=fx.read();const {rates:unused,...fxInfo}=rates;return send(res,200,{nodes:snapshot(),settings:safeSettings(),cost_summary:costSummary(getNodes(),rates),fx_info:fxInfo,server_time:now(),version:'0.2.28',agent_version:'0.2.2'});}
+        if(path==='/api/nodes'&&method==='GET') {const rates=fx.read();const {rates:unused,...fxInfo}=rates;return send(res,200,{nodes:snapshot(),settings:safeSettings(),cost_summary:costSummary(getNodes(),rates),fx_info:fxInfo,server_time:now(),version:'0.2.30',agent_version:'0.2.2'});}
         const adminNetwork=/^\/api\/nodes\/([a-f0-9-]{36})\/network-history$/.exec(path);if(adminNetwork&&method==='GET')return send(res,200,publicHistory(adminNetwork[1],true));
         if(path==='/api/network/history'&&method==='GET')return send(res,200,publicHistory('network',true));
         if(path==='/api/costs'&&method==='GET')return send(res,200,{...costSummary(getNodes(),fx.read()),fx:fx.read()});
@@ -460,6 +467,8 @@ export async function createApp(options = {}) {
           publicCache=null;
           return send(res,201,{id,token:secret,public_url:publicURL});
         }
+        const renewal=/^\/api\/nodes\/([a-f0-9-]{36})\/renew$/.exec(path);
+        if(renewal&&method==='POST'){const input=await body(req),result=renewManually(db,renewal[1],input,dayKey(new Date(),settings.timezone),now());publicCache=null;return send(res,200,result);}
         const match=/^\/api\/nodes\/([a-f0-9-]{36})(?:\/(history|token))?$/.exec(path);
         if(match) {
           const node=db.prepare('SELECT * FROM nodes WHERE id=?').get(match[1]); if(!node) fail(404,'节点不存在');
@@ -515,6 +524,6 @@ export async function createApp(options = {}) {
 function formatBytes(bytes) {const units=['B','KiB','MiB','GiB','TiB'];let i=0;while(bytes>=1024&&i<4){bytes/=1024;i++;}return bytes.toFixed(1)+' '+units[i];}
 if(process.argv[1] && import.meta.url===pathToFileURL(resolve(process.argv[1])).href) {
   const app=await createApp();
-  app.server.listen(Number(process.env.PORT ?? 8080),process.env.HOST ?? '127.0.0.1',()=>console.log(`Firefly Probe 0.2.28 listening on ${process.env.HOST ?? '127.0.0.1'}:${process.env.PORT ?? 8080}`));
+  app.server.listen(Number(process.env.PORT ?? 8080),process.env.HOST ?? '127.0.0.1',()=>console.log(`Firefly Probe 0.2.30 listening on ${process.env.HOST ?? '127.0.0.1'}:${process.env.PORT ?? 8080}`));
   let stopping=false;for(const sig of ['SIGINT','SIGTERM']) process.on(sig,async()=>{if(stopping)return;stopping=true;await app.close();process.exit(0);});
 }

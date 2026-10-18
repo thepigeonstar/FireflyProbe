@@ -16,7 +16,7 @@ test('通知按服务器分别筛选流量预警、日报、离线、资源、�
   const call=async(path,method='GET',data)=>{const response=await fetch(base+path,{method,headers,body:data===undefined?undefined:JSON.stringify(data)});return {status:response.status,body:await response.json(),response};};
   try{
     const login=await call('/admin/api/login','POST',{username:'admin',password:'notification-admin-test-2026'});headers={...headers,Cookie:login.response.headers.get('set-cookie').split(';')[0],'X-CSRF-Token':login.body.csrf};
-    const today=dayKey(new Date(),'Asia/Shanghai'),nodes=[];for(const name of ['节点甲','节点乙','节点丙'])nodes.push((await call('/api/nodes','POST',{name,quota:100,expires:today})).body);const [a,b,c]=nodes;
+    const today=dayKey(new Date(),'Asia/Shanghai'),nodes=[];for(const name of ['节点甲','节点乙','节点丙'])nodes.push((await call('/api/nodes','POST',{name,quota:100,expires:today,auto_renew:false})).body);const [a,b,c]=nodes;
     for(const n of [a,b]){const response=await fetch(base+'/api/agent/report',{method:'POST',headers:{'Content-Type':'application/json',Authorization:'Bearer '+n.token},body:JSON.stringify({hostname:'fixture',interface:'eth0',rx_speed:1,tx_speed:2,cpu:99,mem_total:100,mem_used:99,disk_total:100,disk_used:99,uptime:1,days:[{date:today,rx:90,tx:90}],history_timezone:'Asia/Shanghai'})});assert.equal(response.status,200);}
     app.db.prepare('UPDATE nodes SET last_seen=? WHERE id=?').run(Math.floor(Date.now()/1000)-3600,c.id);
     const targets={quota:[a.id],report:[b.id],offline:[c.id],resource:[a.id],expiry:[b.id]};
