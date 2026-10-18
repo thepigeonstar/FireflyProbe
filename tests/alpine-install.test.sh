@@ -17,20 +17,34 @@ docker run --rm -v "$scratch:/fixture" alpine:3.22 sh -eu -c '
   chmod 755 /etc/init.d/fixture-net
   rc-service fixture-net start
   /fixture/master-fixture /fixture/report.json &
+  # Simulate an existing LightProbe installation with the same node identity.
+  mkdir -p /opt/lightprobe
+  cp /fixture/agent /opt/lightprobe/agent
+  python3 --version >/dev/null 2>&1 || apk add --no-cache python3
+  python3 -c "import json; p=json.load(open(\"/fixture/config.json\")); p.update(vnstat_timezone=\"Asia/Shanghai\", history_start=\"2026-01-01\", custom=\"preserved\"); json.dump(p,open(\"/etc/lightprobe-agent.json\",\"w\"))"
+  printf "#!/sbin/openrc-run\ncommand=\"/opt/lightprobe/agent\"\ncommand_args=\"--config /etc/lightprobe-agent.json\"\nsupervisor=\"supervise-daemon\"\n" > /etc/init.d/lightprobe-agent
+  chmod 755 /etc/init.d/lightprobe-agent
+  rc-update add lightprobe-agent default
+  rc-service lightprobe-agent start
   bash /fixture/install.sh --config /fixture/config.json --binary /fixture/agent
-  rc-service lightprobe-agent status
+  rc-service firefly-probe-agent status
   grep -q "export TZ=Asia/Shanghai" /etc/conf.d/vnstatd
-  test -f /etc/runlevels/default/lightprobe-agent
+  test -f /etc/runlevels/default/firefly-probe-agent
+  test ! -f /etc/init.d/lightprobe-agent
+  test ! -e /etc/runlevels/default/lightprobe-agent
+  test ! -f /etc/lightprobe-agent.json
+  test ! -f /opt/lightprobe/agent
+  python3 -c "import json; c=json.load(open(\"/etc/firefly-probe-agent.json\")); assert c[\"history_start\"]==\"2026-01-01\" and c[\"custom\"]==\"preserved\""
   for attempt in $(seq 1 30); do
     if test -s /fixture/report.json; then break; fi
     sleep 1
   done
   test -s /fixture/report.json
-  before=$(sha256sum /etc/lightprobe-agent.json | cut -d " " -f 1)
+  before=$(sha256sum /etc/firefly-probe-agent.json | cut -d " " -f 1)
   bash /fixture/install.sh --config /fixture/config.json --binary /fixture/agent
-  after=$(sha256sum /etc/lightprobe-agent.json | cut -d " " -f 1)
+  after=$(sha256sum /etc/firefly-probe-agent.json | cut -d " " -f 1)
   test "$before" = "$after"
-  rc-service lightprobe-agent stop
+  rc-service firefly-probe-agent stop
   rc-service vnstatd stop
-  echo "Alpine apk/OpenRC install, first report and reinstall passed."
+  echo "Alpine legacy migration, preserved history/identity, first report and reinstall passed."
 '

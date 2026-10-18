@@ -2,15 +2,98 @@
 set -Eeuo pipefail
 export PYTHONUTF8=1 PYTHONIOENCODING=utf-8
 umask 077
+migration_backup=''
+backup_ready=false
+migration_started=false
+old_active=false
+old_enabled=false
+new_active=false
+new_enabled=false
+backup_agent_file() { [[ ! -f "$1" ]] || cp -p "$1" "$migration_backup/$2"; }
+restore_agent_file() {
+  if [[ -f "$migration_backup/$2" ]]; then
+    install -d -m 0755 "$(dirname "$1")"
+    cp -p "$migration_backup/$2" "$1.rollback"
+    mv -f "$1.rollback" "$1"
+  else
+    rm -f "$1"
+  fi
+}
+rollback_agent_migration() {
+  [[ -n "$migration_backup" && "$backup_ready" == true ]] || return 0
+  set +e
+  echo '安装未完成，正在恢复更新前的采集端。' >&2
+  if [[ "$migration_started" == true ]]; then
+    if [[ "$ID" == alpine ]]; then
+      rc-service firefly-probe-agent stop >/dev/null 2>&1
+      rc-update del firefly-probe-agent default >/dev/null 2>&1
+    else
+      systemctl disable --now firefly-probe-agent >/dev/null 2>&1
+    fi
+  fi
+  restore_agent_file /etc/firefly-probe-agent.json new-config
+  restore_agent_file /opt/firefly-probe/agent new-binary
+  restore_agent_file /etc/systemd/system/firefly-probe-agent.service new-systemd
+  restore_agent_file /etc/init.d/firefly-probe-agent new-openrc
+  restore_agent_file /etc/lightprobe-agent.json old-config
+  restore_agent_file /opt/lightprobe/agent old-binary
+  restore_agent_file /etc/systemd/system/lightprobe-agent.service old-systemd
+  restore_agent_file /etc/init.d/lightprobe-agent old-openrc
+  if [[ "$migration_started" == true ]]; then
+    if [[ "$ID" == alpine ]]; then
+      [[ "$old_enabled" != true ]] || rc-update add lightprobe-agent default
+      [[ "$old_active" != true ]] || rc-service lightprobe-agent restart
+      [[ "$new_enabled" != true ]] || rc-update add firefly-probe-agent default
+      [[ "$new_active" != true ]] || rc-service firefly-probe-agent restart
+    else
+      systemctl daemon-reload
+      [[ "$old_enabled" != true ]] || systemctl enable lightprobe-agent
+      [[ "$old_active" != true ]] || systemctl restart lightprobe-agent
+      [[ "$new_enabled" != true ]] || systemctl enable firefly-probe-agent
+      [[ "$new_active" != true ]] || systemctl restart firefly-probe-agent
+    fi
+  fi
+  echo "已尝试恢复原采集端；备份目录：$migration_backup。请核对服务状态。" >&2
+}
+prepare_agent_migration() {
+  install -d -m 0700 /var/backups/firefly-probe
+  migration_backup=$(mktemp -d /var/backups/firefly-probe/agent-XXXXXXXX)
+  chmod 0700 "$migration_backup"
+  backup_agent_file /etc/firefly-probe-agent.json new-config
+  backup_agent_file /opt/firefly-probe/agent new-binary
+  backup_agent_file /etc/systemd/system/firefly-probe-agent.service new-systemd
+  backup_agent_file /etc/init.d/firefly-probe-agent new-openrc
+  backup_agent_file /etc/lightprobe-agent.json old-config
+  backup_agent_file /opt/lightprobe/agent old-binary
+  backup_agent_file /etc/systemd/system/lightprobe-agent.service old-systemd
+  backup_agent_file /etc/init.d/lightprobe-agent old-openrc
+  if [[ "$ID" == alpine ]]; then
+    if [[ -f /etc/init.d/lightprobe-agent ]] && rc-service lightprobe-agent status >/dev/null 2>&1; then old_active=true; fi
+    [[ ! -e /etc/runlevels/default/lightprobe-agent ]] || old_enabled=true
+    if [[ -f /etc/init.d/firefly-probe-agent ]] && rc-service firefly-probe-agent status >/dev/null 2>&1; then new_active=true; fi
+    [[ ! -e /etc/runlevels/default/firefly-probe-agent ]] || new_enabled=true
+  else
+    if systemctl is-active --quiet lightprobe-agent; then old_active=true; fi
+    if systemctl is-enabled --quiet lightprobe-agent; then old_enabled=true; fi
+    if systemctl is-active --quiet firefly-probe-agent; then new_active=true; fi
+    if systemctl is-enabled --quiet firefly-probe-agent; then new_enabled=true; fi
+  fi
+  backup_ready=true
+  echo "采集端更新前备份：$migration_backup"
+}
+
 phase='初始化'
 report_install_error() {
   local status=$?
   printf '采集端安装失败：%s（行 %s，退出码 %s）\n' "$phase" "${BASH_LINENO[0]}" "$status" >&2
+  trap - ERR
+  rollback_agent_migration
   exit "$status"
 }
 trap report_install_error ERR
 script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
-config_path="$PWD/lightprobe-agent.json"
+config_path="$PWD/firefly-probe-agent.json"
+[[ -f "$config_path" || ! -f "$PWD/lightprobe-agent.json" ]] || config_path="$PWD/lightprobe-agent.json"
 binary_path=''
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -20,7 +103,7 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 [[ $EUID -eq 0 ]] || { echo '请使用 sudo 或 root 运行。' >&2; exit 1; }
-[[ -f "$config_path" ]] || { echo '找不到 lightprobe-agent.json，请先在后台创建节点并下载配置。' >&2; exit 1; }
+[[ -f "$config_path" ]] || { echo '找不到 firefly-probe-agent.json（兼容旧 lightprobe-agent.json），请先在后台创建节点并下载配置。' >&2; exit 1; }
 phase='检查系统版本'
 [[ -f /etc/os-release ]] || { echo '无法读取 /etc/os-release，不能识别系统。' >&2; exit 1; }
 # shellcheck disable=SC1091
@@ -33,16 +116,16 @@ case "$ID" in
 esac
 case "$(uname -m)" in x86_64) arch=amd64 ;; aarch64|arm64) arch=arm64 ;; *) echo '仅提供 amd64 / arm64 程序。' >&2; exit 1 ;; esac
 if [[ -z "$binary_path" ]]; then
-  for candidate in "$PWD/lightprobe-agent-linux-$arch" "$script_dir/lightprobe-agent-linux-$arch" "$script_dir/../bin/lightprobe-agent-linux-$arch"; do
+  for candidate in "$PWD/firefly-probe-agent-linux-$arch" "$script_dir/firefly-probe-agent-linux-$arch" "$script_dir/../bin/firefly-probe-agent-linux-$arch" "$PWD/lightprobe-agent-linux-$arch" "$script_dir/lightprobe-agent-linux-$arch" "$script_dir/../bin/lightprobe-agent-linux-$arch"; do
     if [[ -f "$candidate" ]]; then binary_path="$candidate"; break; fi
   done
 fi
-[[ -f "$binary_path" ]] || { echo "找不到 lightprobe-agent-linux-${arch}，请从安装包 bin 目录上传。" >&2; exit 1; }
+[[ -f "$binary_path" ]] || { echo "找不到 firefly-probe-agent-linux-${arch}，请从安装包 bin 目录上传。" >&2; exit 1; }
+phase='备份现有采集端'
+prepare_agent_migration
 phase='安装采集程序'
-install -d -m 0755 /opt/lightprobe
-# Avoid replacing a running executable in place.
-install -m 0755 "$binary_path" /opt/lightprobe/agent.new
-mv -f /opt/lightprobe/agent.new /opt/lightprobe/agent
+install -d -m 0755 /opt/firefly-probe
+install -m 0755 "$binary_path" /opt/firefly-probe/agent.new
 phase='安装 vnStat 和系统依赖'
 if [[ "$ID" == alpine ]]; then
   release=${VERSION_ID%.*}; [[ "$VERSION_ID" != *.*.* ]] && release=$VERSION_ID
@@ -74,7 +157,7 @@ fi
 supports_utc=false
 if vnstat --showconfig 2>/dev/null | grep -qE '^UseUTC[[:space:]]'; then supports_utc=true; fi
 phase='读取主控时区配置'
-zone=$(/opt/lightprobe/agent --config "$config_path" --print-timezone)
+zone=$(/opt/firefly-probe/agent.new --config "$config_path" --print-timezone)
 [[ "$zone" =~ ^[A-Za-z0-9_+/-]+$ && -f "/usr/share/zoneinfo/$zone" ]] || { echo '主控统计时区无效。' >&2; exit 1; }
 system_zone=$(timedatectl show --property=Timezone --value 2>/dev/null || cat /etc/timezone 2>/dev/null || readlink -f /etc/localtime 2>/dev/null || true)
 system_zone=${system_zone#/usr/share/zoneinfo/}
@@ -121,11 +204,17 @@ if not iface:
         if 'dev' in parts: iface = parts[parts.index('dev') + 1]; break
 if not re.fullmatch(r'[a-zA-Z0-9_.:@-]{1,40}', iface): raise SystemExit('未找到网卡，请在后台手动指定。')
 subprocess.run(['vnstat', '--add', '-i', iface], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-old_path = '/etc/lightprobe-agent.json'
-if os.path.isfile(old_path):
-    with open(old_path) as f: old = json.load(f)
-    if old.get('token') == cfg['token'] and old.get('server') == cfg['server'] and old.get('vnstat_timezone') == zone:
-        start = old.get('history_start', start)
+old_path = '/etc/firefly-probe-agent.json'
+installed = []
+for path in (old_path, '/etc/lightprobe-agent.json'):
+    if os.path.isfile(path):
+        with open(path, encoding='utf-8-sig') as f: installed.append(json.load(f))
+if len(installed) == 2 and any(installed[0].get(k) != installed[1].get(k) for k in ('server', 'token')):
+    raise SystemExit('新旧采集端配置属于不同节点，请先核对，未停止原服务。')
+for old in installed:
+    if old.get('token') == cfg['token'] and old.get('server') == cfg['server']:
+        cfg = {**old, **cfg}
+        if old.get('vnstat_timezone') == zone: start = old.get('history_start', start)
 cfg.update(vnstat_timezone=zone, history_start=start)
 temporary = old_path + '.new'
 with open(temporary, 'w') as f: json.dump(cfg, f, indent=2)
@@ -150,46 +239,56 @@ if [[ -f /etc/vnstat.conf ]]; then
     fi
   fi
 fi
-phase='配置并启动系统服务'
+phase='迁移并启动 FireflyProbe 服务'
+migration_started=true
+if [[ "$ID" == alpine ]]; then
+  if [[ -f /etc/init.d/lightprobe-agent ]]; then
+    if rc-service lightprobe-agent status >/dev/null 2>&1; then rc-service lightprobe-agent stop; fi
+    if [[ -e /etc/runlevels/default/lightprobe-agent ]]; then rc-update del lightprobe-agent default; fi
+  fi
+else
+  if systemctl cat lightprobe-agent.service >/dev/null 2>&1; then systemctl disable --now lightprobe-agent; fi
+fi
+mv -f /opt/firefly-probe/agent.new /opt/firefly-probe/agent
 if [[ "$ID" == alpine ]]; then
   [[ -x /sbin/openrc-run && -f /etc/init.d/vnstatd ]] || { echo '需要正常运行 OpenRC 的 Alpine 服务器。' >&2; exit 1; }
   # Alpine runs vnstatd as vnstat:vnstat; --add may have created SQLite as root.
   chown vnstat:vnstat /var/lib/vnstat
   find /var/lib/vnstat -maxdepth 1 -type f -name 'vnstat.db*' -exec chown vnstat:vnstat {} +
-  cat > /etc/init.d/lightprobe-agent <<'OPENRC'
+  cat > /etc/init.d/firefly-probe-agent <<'OPENRC'
 #!/sbin/openrc-run
-description="Firefly Probe monitoring agent"
-command="/opt/lightprobe/agent"
-command_args="--config /etc/lightprobe-agent.json"
+description="FireflyProbe monitoring agent"
+command="/opt/firefly-probe/agent"
+command_args="--config /etc/firefly-probe-agent.json"
 command_user="root"
 supervisor="supervise-daemon"
 respawn_delay=10
 respawn_max=0
-output_log="/var/log/lightprobe-agent.log"
-error_log="/var/log/lightprobe-agent.log"
+output_log="/var/log/firefly-probe-agent.log"
+error_log="/var/log/firefly-probe-agent.log"
 depend() { need net; after vnstatd; }
 start_pre() {
   umask 077
-  checkpath -f -m 0600 -o root:root /var/log/lightprobe-agent.log
+  checkpath -f -m 0600 -o root:root /var/log/firefly-probe-agent.log
 }
 OPENRC
-  chmod 0755 /etc/init.d/lightprobe-agent
+  chmod 0755 /etc/init.d/firefly-probe-agent
   rc-update add vnstatd default
   rc-service vnstatd restart
-  rc-update add lightprobe-agent default
-  rc-service lightprobe-agent restart
-  rc-service lightprobe-agent status
-  echo '采集端已安装。检查：rc-service lightprobe-agent status；日志：tail -n 50 /var/log/lightprobe-agent.log'
+  rc-update add firefly-probe-agent default
+  rc-service firefly-probe-agent restart
+  rc-service firefly-probe-agent status
+  echo '采集端已安装。检查：rc-service firefly-probe-agent status；日志：tail -n 50 /var/log/firefly-probe-agent.log'
 else
-cat > /etc/systemd/system/lightprobe-agent.service <<'UNIT'
+cat > /etc/systemd/system/firefly-probe-agent.service <<'UNIT'
 [Unit]
-Description=LightProbe server monitoring agent
+Description=FireflyProbe server monitoring agent
 After=network-online.target vnstat.service
 Wants=network-online.target
 
 [Service]
 Type=simple
-ExecStart=/opt/lightprobe/agent --config /etc/lightprobe-agent.json
+ExecStart=/opt/firefly-probe/agent --config /etc/firefly-probe-agent.json
 Restart=always
 RestartSec=10
 User=root
@@ -213,8 +312,16 @@ UNIT
 systemctl daemon-reload
 systemctl enable --now vnstat
 systemctl restart vnstat
-systemctl enable lightprobe-agent
-systemctl restart lightprobe-agent
-echo 'LightProbe 采集端已安装。检查：systemctl status lightprobe-agent --no-pager'
-echo '日志：journalctl -u lightprobe-agent -n 50 --no-pager'
+systemctl enable firefly-probe-agent
+systemctl restart firefly-probe-agent
+systemctl is-active --quiet firefly-probe-agent
+echo 'FireflyProbe 采集端已安装。检查：systemctl status firefly-probe-agent --no-pager'
+echo '日志：journalctl -u firefly-probe-agent -n 50 --no-pager'
 fi
+
+# Commit migration only after the new service is confirmed running.
+rm -f /etc/systemd/system/lightprobe-agent.service /etc/init.d/lightprobe-agent
+rm -f /etc/lightprobe-agent.json /opt/lightprobe/agent
+if [[ "$ID" != alpine ]]; then systemctl daemon-reload; fi
+echo 'FireflyProbe 采集端迁移完成；保留节点身份、vnStat 和主控历史。'
+migration_backup=''

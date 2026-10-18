@@ -32,9 +32,11 @@ case "$ID" in
     ;;
   *) echo '支持 Debian 11+、Ubuntu 22.04+、Alpine 3.20+。' >&2; exit 1 ;;
 esac
+existing_path=/etc/firefly-probe-agent.json
+[ -f "$existing_path" ] || existing_path=/etc/lightprobe-agent.json
 if [ "$upgrade" = true ] && [ -z "$server" ]; then
-  [ -f /etc/lightprobe-agent.json ] || { echo '未找到现有采集端配置，请先接入服务器。' >&2; exit 1; }
-  server=$(python3 -c 'import json; print(json.load(open("/etc/lightprobe-agent.json"))["server"])')
+  [ -f "$existing_path" ] || { echo '未找到现有采集端配置，请先接入服务器。' >&2; exit 1; }
+  server=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["server"])' "$existing_path")
 fi
 printf '%s\n' "$server" | grep -Eq '^https://[a-zA-Z0-9.-]+(:[0-9]+)?/?$' || { echo '需要有效的 HTTPS 主控地址。' >&2; exit 1; }
 server=${server%/}

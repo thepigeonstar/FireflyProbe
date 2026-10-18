@@ -13,7 +13,7 @@ test('采集端支持 Debian 11/12/13 与 Alpine 3.20+，旧版本拒绝时显�
 });
 test('安装失败显示阶段、行号和退出码，不输出含密钥的命令',()=>{
  const dir=mkdtempSync(join(tmpdir(),'agent-errors-'));
- try{for(const file of ['bootstrap.sh','install.sh']){const text=readFileSync(new URL('../agent/'+file,import.meta.url),'utf8'),trap=/report_install_error\(\) \{[\s\S]*?\n\}\ntrap report_install_error ERR/.exec(text)[0],script=join(dir,file);writeFileSync(script,"set -Eeuo pipefail\nphase='下载安装脚本和采集程序'\n"+trap+"\nbash -c 'exit 7' FAKE_NODE_SECRET_NOT_FOR_LOGS\n");const run=spawnSync(bash,[shellPath(script)],{encoding:'utf8'});assert.equal(run.status,7);assert.ok(run.stderr.includes('下载安装脚本和采集程序')&&run.stderr.includes('退出码 7'));assert.ok(!run.stderr.includes('FAKE_NODE_SECRET'));}}
+ try{for(const file of ['bootstrap.sh','install.sh']){const text=readFileSync(new URL('../agent/'+file,import.meta.url),'utf8'),trap=/report_install_error\(\) \{[\s\S]*?\n\}\ntrap report_install_error ERR/.exec(text)[0],script=join(dir,file);writeFileSync(script,"set -Eeuo pipefail\nrollback_agent_migration(){ :; }\nphase='下载安装脚本和采集程序'\n"+trap+"\nbash -c 'exit 7' FAKE_NODE_SECRET_NOT_FOR_LOGS\n");const run=spawnSync(bash,[shellPath(script)],{encoding:'utf8'});assert.equal(run.status,7);assert.ok(run.stderr.includes('下载安装脚本和采集程序')&&run.stderr.includes('退出码 7'));assert.ok(!run.stderr.includes('FAKE_NODE_SECRET'));}}
  finally{rmSync(dir,{recursive:true,force:true});}
 });
 test('vnStat 2.6 不写入不存在的 UseUTC，新版支持时关闭 UTC 并保留其他配置',()=>{

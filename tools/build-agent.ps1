@@ -13,7 +13,7 @@ try {
   try {
     foreach ($architecture in @('amd64', 'arm64')) {
       $env:GOARCH = $architecture
-      go build -trimpath '-ldflags=-s -w' -o (Join-Path $binDir "lightprobe-agent-linux-$architecture") .
+      go build -trimpath '-ldflags=-s -w' -o (Join-Path $binDir "firefly-probe-agent-linux-$architecture") .
       if ($LASTEXITCODE -ne 0) { throw "Build failed: $architecture" }
     }
   } finally { Pop-Location }
@@ -23,9 +23,10 @@ try {
   $env:CGO_ENABLED = $previousCGO
 }
 $hashLines = foreach ($architecture in @('amd64', 'arm64')) {
-  $name = "lightprobe-agent-linux-$architecture"
+  $name = "firefly-probe-agent-linux-$architecture"
   $hash = (Get-FileHash -LiteralPath (Join-Path $binDir $name) -Algorithm SHA256).Hash.ToLowerInvariant()
   "$hash  $name"
+  "$hash  lightprobe-agent-linux-$architecture"
 }
 [IO.File]::WriteAllText((Join-Path $binDir 'SHA256SUMS'), ($hashLines -join "`n") + "`n", [Text.UTF8Encoding]::new($false))
 $hashLines

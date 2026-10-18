@@ -263,3 +263,11 @@ Installer locale hotfix: braced variables adjacent to Chinese punctuation in tim
 - 仅调整表单勾选位置和版本 / 文档，自动续期计算逻辑与 v0.2.31 一致，沿用此前通过的 102 项 Node 测试。
 - Chrome 确认默认勾选的“自动续期”紧邻“计入固定费用”之前，独立周期输入不存在，保存 / 重新打开、付款周期驱动续期和诊断日志窗口回归通过，无脚本错误。
 - 用户首次实机诊断：17 条清单全部对应本主控、有效配对 15 条，两条无字节计数；30 秒 GOST 14.790 MiB，网卡 34.021–34.060 MiB，TCP 重传段 3224，新增处理错误 34。重传与协议开销是线索，未证明此前全天差额原因或统计无遗漏。
+
+## v0.2.33 · 2026-10-18
+
+- 105 项 Node 测试通过，包括新旧二进制 URL / 哈希校验、SSH 部署、队列更新以及迁移失败恢复。Debian / Alpine 服务操作在临时目录夹具中模拟；Windows 夹具不模拟 POSIX 文件权限，真实权限依靠 Linux CI。
+- Python 实际执行安装器配置阶段，验证同节点身份、history_start 和附加字段保留，新旧身份冲突不覆盖；旧服务及配置的失败恢复经过测试。
+- Go 测试及 go vet 通过；新增实际 HTTP 测试确认 FireflyProbe User-Agent 和节点认证保持不变。Linux amd64 / arm64 二进制构建为 0.2.3，更新 SHA256SUMS 并包含旧名称校验别名。
+- ShellCheck warning 级和 Bash 语法检查通过；Alpine Docker CI 增加从旧服务迁移、旧文件移除和历史保留验证。本机没有 Linux Docker 环境，真实 OpenRC / systemd 环境安装需上传后由 CI / 实机验证，未操作用户 VPS。
+- Chrome 验证新旧版本提示、指南服务名称和下载配置文件名，以及原有续期表单、诊断窗口回归。仍需用户执行全部采集端更新，不能把主控版本更新等同于机器已迁移。

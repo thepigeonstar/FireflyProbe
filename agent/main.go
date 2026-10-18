@@ -23,7 +23,7 @@ import (
 	"time"
 )
 
-const version = "0.2.2"
+const version = "0.2.3"
 
 type Config struct {
 	Server         string `json:"server"`
@@ -295,7 +295,7 @@ func request(ctx context.Context, client *http.Client, cfg Config, path string, 
 	}
 	req.Header.Set("Authorization", "Bearer "+cfg.Token)
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("User-Agent", "LightProbe/"+version)
+	req.Header.Set("User-Agent", "FireflyProbe/"+version)
 	resp, e := client.Do(req)
 	if e != nil {
 		return errors.New("server connection failed")
@@ -322,7 +322,7 @@ func remoteConfig(ctx context.Context, client *http.Client, cfg Config) (Remote,
 	return r, nil
 }
 func main() {
-	configPath := flag.String("config", "/etc/lightprobe-agent.json", "configuration path")
+	configPath := flag.String("config", "/etc/firefly-probe-agent.json", "configuration path")
 	printZone := flag.Bool("print-timezone", false, "fetch configured timezone and exit")
 	check := flag.Bool("check", false, "collect one sample locally without submitting it")
 	showVersion := flag.Bool("version", false, "print version")

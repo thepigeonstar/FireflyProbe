@@ -22,12 +22,14 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 [[ $EUID -eq 0 ]] || { echo '请切换到 root 后执行安装命令。' >&2; exit 1; }
+existing_path=/etc/firefly-probe-agent.json
+[[ -f "$existing_path" ]] || existing_path=/etc/lightprobe-agent.json
 if [[ "$upgrade" == true ]]; then
-  [[ -f /etc/lightprobe-agent.json ]] || { echo '未找到现有采集端配置，请先接入服务器。' >&2; exit 1; }
-  mapfile -t existing < <(python3 -c 'import json; c=json.load(open("/etc/lightprobe-agent.json")); print(c["server"]); print(c["token"])')
+  [[ -f "$existing_path" ]] || { echo '未找到现有采集端配置，请先接入服务器。' >&2; exit 1; }
+  mapfile -t existing < <(python3 -c 'import json,sys; c=json.load(open(sys.argv[1])); print(c["server"]); print(c["token"])' "$existing_path")
   [[ ${#existing[@]} -eq 2 ]] || { echo '无法读取采集端配置。' >&2; exit 1; }
   if [[ -n "$server" && "${server%/}" != "${existing[0]%/}" ]]; then
-    echo '该服务器已接入其他主控，请先核对 /etc/lightprobe-agent.json，避免覆盖现有监控。' >&2; exit 1
+    echo '该服务器已接入其他主控，请先核对现有采集端配置，避免覆盖现有监控。' >&2; exit 1
   fi
   server=${server:-${existing[0]}}; secret=${secret:-${existing[1]}}
 fi
@@ -49,26 +51,26 @@ temporary=$(mktemp -d)
 trap 'rm -rf -- "$temporary"' EXIT
 phase='下载安装脚本和采集程序'
 curl --proto '=https' --tlsv1.2 --http1.1 --retry 3 --retry-all-errors --retry-delay 2 --retry-max-time 360 --fail --show-error --silent --connect-timeout 15 --max-time 60 "$server/downloads/install.sh" -o "$temporary/install.sh"
-curl --proto '=https' --tlsv1.2 --http1.1 --retry 3 --retry-all-errors --retry-delay 2 --retry-max-time 360 --fail --show-error --silent --connect-timeout 15 --max-time 300 "$server/downloads/lightprobe-agent-linux-$arch" -o "$temporary/lightprobe-agent-linux-$arch"
+curl --proto '=https' --tlsv1.2 --http1.1 --retry 3 --retry-all-errors --retry-delay 2 --retry-max-time 360 --fail --show-error --silent --connect-timeout 15 --max-time 300 "$server/downloads/firefly-probe-agent-linux-$arch" -o "$temporary/firefly-probe-agent-linux-$arch"
 curl --proto '=https' --tlsv1.2 --http1.1 --retry 3 --retry-all-errors --retry-delay 2 --retry-max-time 360 --fail --show-error --silent --connect-timeout 15 --max-time 30 "$server/downloads/SHA256SUMS" -o "$temporary/SHA256SUMS"
 phase='校验采集程序'
-checksum=$(awk -v name="lightprobe-agent-linux-$arch" '$2 == name {print $1}' "$temporary/SHA256SUMS")
+checksum=$(awk -v name="firefly-probe-agent-linux-$arch" '$2 == name {print $1}' "$temporary/SHA256SUMS")
 [[ "$checksum" =~ ^[a-f0-9]{64}$ ]] || { echo '采集程序校验信息无效。' >&2; exit 1; }
-printf '%s  %s\n' "$checksum" "$temporary/lightprobe-agent-linux-$arch" | sha256sum -c -
+printf '%s  %s\n' "$checksum" "$temporary/firefly-probe-agent-linux-$arch" | sha256sum -c -
 # Validate credentials before installing packages or changing a running agent.
 phase='验证主控连接和节点密钥'
 printf 'header = "Authorization: Bearer %s"\n' "$secret" > "$temporary/curl.conf"
 curl --config "$temporary/curl.conf" --proto '=https' --tlsv1.2 --http1.1 --retry 3 --retry-all-errors --retry-delay 2 --retry-max-time 360 --fail --show-error --silent --connect-timeout 15 --max-time 30 "$server/api/agent/config" -o "$temporary/remote.json"
-printf '{"server":"%s","token":"%s","disk_path":"/"}\n' "$server" "$secret" > "$temporary/lightprobe-agent.json"
+printf '{"server":"%s","token":"%s","disk_path":"/"}\n' "$server" "$secret" > "$temporary/firefly-probe-agent.json"
 if [[ "$upgrade" == true ]]; then
-  python3 - "$temporary/lightprobe-agent.json" <<'PY'
+  python3 - "$temporary/firefly-probe-agent.json" "$existing_path" <<'PY'
 import json, sys
 with open(sys.argv[1]) as f: supplied = json.load(f)
-with open('/etc/lightprobe-agent.json') as f: existing = json.load(f)
+with open(sys.argv[2]) as f: existing = json.load(f)
 existing.update(server=supplied['server'], token=supplied['token'])
 with open(sys.argv[1], 'w') as f: json.dump(existing, f)
 PY
 fi
 unset secret
 phase='安装并启动采集端'
-bash "$temporary/install.sh" --config "$temporary/lightprobe-agent.json" --binary "$temporary/lightprobe-agent-linux-$arch"
+bash "$temporary/install.sh" --config "$temporary/firefly-probe-agent.json" --binary "$temporary/firefly-probe-agent-linux-$arch"

@@ -56,11 +56,11 @@ TLS 证书在现有代理中配置。若代理本身在另一个 Docker 容器�
 4. 创建后点击“复制安装命令”，到对应服务器的 root 终端粘贴执行。命令只显示一次，遗失后可在“详情”里重新生成密钥。
 5. 命令自动从主控下载脚本、对应架构的程序和校验文件，验证节点密钥后安装。无需手动上传文件。服务器须有 curl 和 CA 证书；缺少时先运行 `apt-get update && apt-get install -y curl ca-certificates`。
 
-手动方式仍保留：展开“手动下载配置（备用）”，将配置与 `agent/install.sh`、对应架构的 `bin/lightprobe-agent-linux-*` 上传到同一目录，再执行 `sudo bash install.sh`。
+手动方式仍保留：展开“手动下载配置（备用）”，将配置与 `agent/install.sh`、对应架构的 `bin/firefly-probe-agent-linux-*` 上传到同一目录，再执行 `sudo bash install.sh`。
 
 采集端支持 Debian 11/12/13、Ubuntu 22.04+（systemd/apt）和 Alpine 3.20+ 稳定版（OpenRC/apk），要求可访问主控 HTTPS。真实发行版安装仍应先在你的测试机验证。
 
-脚本会安装 vnStat、Python 3（仅用于安装配置）、CA 证书及基础工具；将采集程序放在 `/opt/lightprobe/agent`，配置写入 `/etc/lightprobe-agent.json`（权限 600）；配置 vnStat 的服务时区并重启 vnStat，设置本地日历史保留 730 天，然后启用 `lightprobe-agent.service`。
+脚本会安装 vnStat、Python 3（仅用于安装配置）、CA 证书及基础工具；将采集程序放在 `/opt/firefly-probe/agent`，配置写入 `/etc/firefly-probe-agent.json`（权限 600）；配置 vnStat 的服务时区并重启 vnStat，设置本地日历史保留 730 天，然后启用 `firefly-probe-agent.service`。
 
 不会执行远程命令，不需要给节点开放新的入站端口。当前采集服务以 root 运行并启用 systemd 限制；没有命令下发接口，程序不自动更新。
 
@@ -76,10 +76,10 @@ TLS 证书在现有代理中配置。若代理本身在另一个 Docker 容器�
 ### 检查采集端
 
 ```bash
-systemctl status lightprobe-agent --no-pager
-journalctl -u lightprobe-agent -n 50 --no-pager
+systemctl status firefly-probe-agent --no-pager
+journalctl -u firefly-probe-agent -n 50 --no-pager
 vnstat -i eth0 --json d 2
-sudo /opt/lightprobe/agent --config /etc/lightprobe-agent.json --check
+sudo /opt/firefly-probe/agent --config /etc/firefly-probe-agent.json --check
 ```
 
 最后一条仅在本地输出采集值，不提交数据、不输出密钥。首个网速采样为 0，第二次开始按计数器差值计算。
@@ -137,9 +137,9 @@ docker compose start lightprobe
 先在主控停用或删除对应节点，再执行：
 
 ```bash
-sudo systemctl disable --now lightprobe-agent
-sudo rm -f /etc/systemd/system/lightprobe-agent.service
-sudo rm -f /etc/lightprobe-agent.json /opt/lightprobe/agent
+sudo systemctl disable --now firefly-probe-agent
+sudo rm -f /etc/systemd/system/firefly-probe-agent.service
+sudo rm -f /etc/firefly-probe-agent.json /opt/firefly-probe/agent
 sudo systemctl daemon-reload
 ```
 
@@ -200,11 +200,11 @@ Debian 11 采集端使用官方 vnStat 2.6 包，支持所需 JSON 日流量与 
 
 Alpine 使用后台生成的通用安装命令，入口为 sh，会自动准备 Bash、curl、Python 和证书。安装使用 apk 安装 vnstat、vnstat-openrc、iproute2、tzdata 和 coreutils；若缺少 community 仓库，仅补齐与当前稳定发行版本一致的官方仓库。不开启 edge。
 
-统计时区写入 /etc/conf.d/vnstatd 的 export TZ；不修改全局系统时区，不删除 vnStat 数据。服务为 /etc/init.d/lightprobe-agent，使用 OpenRC 开机自启和异常重启。需要真实运行 OpenRC 的 Alpine VPS，普通 Alpine Docker 容器不属于生产安装范围。
+统计时区写入 /etc/conf.d/vnstatd 的 export TZ；不修改全局系统时区，不删除 vnStat 数据。服务为 /etc/init.d/firefly-probe-agent，使用 OpenRC 开机自启和异常重启。需要真实运行 OpenRC 的 Alpine VPS，普通 Alpine Docker 容器不属于生产安装范围。
 
 ```sh
-rc-service lightprobe-agent status
-tail -n 50 /var/log/lightprobe-agent.log
+rc-service firefly-probe-agent status
+tail -n 50 /var/log/firefly-probe-agent.log
 rc-service vnstatd status
 ```
 
@@ -249,3 +249,23 @@ Telegram 日报每台服务器显示昨日上传、下载与两者合计，周�
 按“服务器配置 → 付款周期”延长一次：月付 +1 个月、季付 +3 个月、年付 +12 个月，自定义按对应月数；与自动续期共用付款周期。由原到期日延长，保留月底锚点；若长期逾期，加一个周期后仍过期，将继续出现在列表中。确认后更新统计和列表，取消旧到期日尚未发出的提醒，不修改流量、费用或自动续期开关，不代为付款。
 
 窗口打开后若日期或周期已被修改（包括自动续期），提交会提示重新确认；重复提交同一个日期不会多延长一次。若希望所有续费都由你手动确认，请在服务器配置取消勾选“自动续期”；仍开启自动续期的节点会继续沿用自动规则，自动延长后按新日期决定是否出现在临期列表。
+
+## LightProbe 采集端迁移为 FireflyProbe（v0.2.33）
+
+主控更新后，进入“服务器列表 → 全部更新采集端”，按队列逐台迁移到采集端 0.2.3；也可单台“一键安装/更新”。没有 SSH 配置的节点，在其 SSH 终端执行该节点“复制更新命令”提供的命令。仅更新主控不会主动修改受控机器。
+
+新服务名是 firefly-probe-agent，程序 /opt/firefly-probe/agent，配置 /etc/firefly-probe-agent.json，Alpine 日志 /var/log/firefly-probe-agent.log。显示名称为 FireflyProbe，默认配置与 HTTP User-Agent 同时改名。新旧下载 URL 和 SHA256 名称都兼容。
+
+安装器优先读取新配置，兼容 /etc/lightprobe-agent.json。保留同节点的密钥、磁盘路径、history_start、vnStat 时区和附加配置，不删除 vnStat 数据库或主控历史。安装前备份保存在 /var/backups/firefly-probe/agent-*，目录仅 root 可读。新旧配置若属于不同节点则拒绝覆盖；新服务失败时尝试从备份恢复原配置、程序和服务并明确报错。
+
+新服务确认运行后移除旧 lightprobe-agent 服务及旧程序 / 配置，只保留备份。GOST 服务及其统计标识不改变，不重启 GOST。vnStat 仍按已有安装流程重启，但不清空其数据；旧时区 drop-in 文件名保留兼容，以免因改名触发时区历史变化。主控 SQLite 和 Compose 的历史 lightprobe 名称不迁移，避免影响现有数据卷。
+
+检查版本和运行状态：
+
+```bash
+/opt/firefly-probe/agent --version
+systemctl status firefly-probe-agent --no-pager
+journalctl -u firefly-probe-agent -n 50 --no-pager
+```
+
+Alpine 使用 rc-service firefly-probe-agent status，以及 tail -n 50 /var/log/firefly-probe-agent.log。服务运行仍需以后台收到 0.2.3 的新上报确认最终接入成功；没有 SSH 的服务器不会由主控自动升级。

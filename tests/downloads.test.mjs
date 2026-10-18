@@ -16,8 +16,8 @@ test('安装文件白名单、二进制校验、禁止下载配置与源码',asy
       const r=await fetch(base+path);assert.equal(r.status,200);assert.match(await r.text(),/^#!(?:\/usr\/bin\/env bash|\/bin\/sh)/);
     }
     const sums=await (await fetch(base+'/downloads/SHA256SUMS')).text();
-    for(const arch of ['amd64','arm64']) {
-      const file='lightprobe-agent-linux-'+arch;
+    for(const name of ['lightprobe','firefly-probe']) for(const arch of ['amd64','arm64']) {
+      const file=name+'-agent-linux-'+arch;
       const r=await fetch(base+'/downloads/'+file);assert.equal(r.status,200);
       const bytes=Buffer.from(await r.arrayBuffer());assert.equal(bytes.subarray(0,4).toString(),'\x7fELF');
       const digest=createHash('sha256').update(bytes).digest('hex');assert.ok(sums.includes(digest+'  '+file));

@@ -5,4 +5,5 @@ data
 node_modules
 *.sqlite*
 lightprobe-agent.json
+firefly-probe-agent.json
 release
