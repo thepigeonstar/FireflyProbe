@@ -271,3 +271,10 @@ Installer locale hotfix: braced variables adjacent to Chinese punctuation in tim
 - Go 测试及 go vet 通过；新增实际 HTTP 测试确认 FireflyProbe User-Agent 和节点认证保持不变。Linux amd64 / arm64 二进制构建为 0.2.3，更新 SHA256SUMS 并包含旧名称校验别名。
 - ShellCheck warning 级和 Bash 语法检查通过；Alpine Docker CI 增加从旧服务迁移、旧文件移除和历史保留验证。本机没有 Linux Docker 环境，真实 OpenRC / systemd 环境安装需上传后由 CI / 实机验证，未操作用户 VPS。
 - Chrome 验证新旧版本提示、指南服务名称和下载配置文件名，以及原有续期表单、诊断窗口回归。仍需用户执行全部采集端更新，不能把主控版本更新等同于机器已迁移。
+
+## v0.2.34 · 2026-10-18
+
+- Chrome 实测后台 / 公开页卡片和列表切换、独立偏好、刷新和轮询保持、搜索与分组、详情 / 配置入口、公开历史导航。
+- 验证公开名称默认隐藏、私有节点不出现、系统版本权限、关闭网速 / 资源 / 流量权限后列和历史链接移除、关闭公开展示后清空旧列表；列表只使用公开 API 数据。
+- 桌面、系统深色模式、390px 手机表格横向滚动检查通过，无页面水平溢出；禁止 localStorage 仍能切换，无浏览器脚本错误。
+- 105 项 Node 回归测试通过。只更改主控前端和静态文件白名单，采集端 / 安装器 / 统计算法不变，采集端保持 0.2.3。未推送 GitHub 或操作用户 VPS。
