@@ -65,3 +65,9 @@ html[data-theme=dark] .forward-server.selected,html[data-theme=dark] .forward-ta
 .expiry-label{display:block;font-size:11px;margin-top:6px}.expiry-label.soon{color:var(--blue)}.expiry-label.expired{color:var(--red)}.renewal-button{white-space:nowrap;color:var(--blue)}#renewal-dialog{width:min(520px,calc(100% - 32px))}.renewal-name{font-weight:600;overflow-wrap:anywhere}.renewal-details{display:grid;gap:16px;margin:24px 0}.renewal-details>div{display:flex;justify-content:space-between;gap:18px}.renewal-details span{color:var(--muted)}#renewal-to{color:var(--blue)}#renewal-form .form-actions{justify-content:flex-end}
 
 .forward-group-info{flex:1;min-width:0;overflow-wrap:anywhere}#forward-group-directory .group-drag-handle{flex:none;padding:4px 7px;margin:0;touch-action:none}.forward-group-row.group-drag-before{box-shadow:inset 0 2px var(--blue)}.forward-group-row.group-drag-after{box-shadow:inset 0 -2px var(--blue)}
+
+#forward-pagination button.forward-page-drop{outline:2px solid var(--blue);background:var(--blue);color:#fff}
+.forward-sampling-warning{text-align:left;font-size:inherit}
+
+#forward-pagination{position:sticky;bottom:0;z-index:2;background:var(--card);border-top:1px solid var(--line)}
+#forward-pagination button{min-height:34px;white-space:nowrap}

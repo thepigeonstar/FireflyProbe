@@ -175,9 +175,9 @@ def compare(first, second, interface, expected_rule_ids=None):
             matched_rx += delta['rx']; matched_tx += delta['tx']
         flags = []
         if a.get('agent_limit') or b.get('agent_limit'):
-            flags.append('超过采集端 256 KiB 上限')
+            flags.append('超过旧版采集端 256 KiB 上限（请更新至 0.2.4 流式采集）')
         if a.get('parser_gap') or b.get('parser_gap'):
-            flags.append('原始计数与现有采集解析不同')
+            flags.append('原始计数与旧版采集解析不同（0.2.4 已兼容标签空格与时间戳）')
         if not a.get('agent_marker') or not b.get('agent_marker'):
             flags.append('缺少采集端要求的服务标记')
         if index < 30:

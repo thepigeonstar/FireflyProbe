@@ -1,8 +1,10 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"math"
 	"net/http"
@@ -23,6 +25,7 @@ type ForwardSample struct {
 	Rx        uint64 `json:"rx"`
 	Tx        uint64 `json:"tx"`
 	Errors    uint64 `json:"errors"`
+	Error     string `json:"error,omitempty"`
 }
 type forwardManifest struct {
 	ID    string `json:"id"`
@@ -31,29 +34,57 @@ type forwardManifest struct {
 }
 
 var forwardID = regexp.MustCompile(`^[a-f0-9-]{36}$`)
+var forwardMetricLine = regexp.MustCompile(`^(gost_services|gost_service_transfer_input_bytes_total|gost_service_transfer_output_bytes_total|gost_service_handler_errors_total)(?:\{.*\})?[ \t]+(\S+)(?:[ \t]+[+-]?\d+)?$`)
 
-func parseForwardMetrics(raw string) (uint64, uint64, uint64) {
-	var rx, tx, errors float64
-	for _, line := range strings.Split(raw, "\n") {
-		fields := strings.Fields(line)
-		if len(fields) != 2 {
+const forwardMetricsLimit = 16 * 1024 * 1024
+
+// Stream the response: client labels can grow well beyond 256 KiB. Never
+// accept a partial response as a smaller counter or hold it all in memory.
+func readForwardMetrics(reader io.Reader) (uint64, uint64, uint64, error) {
+	limited := &io.LimitedReader{R: reader, N: forwardMetricsLimit + 1}
+	scanner := bufio.NewScanner(limited)
+	scanner.Buffer(make([]byte, 4096), 65536)
+	var rx, tx, failures float64
+	marker := false
+	for scanner.Scan() {
+		line := scanner.Text()
+		match := forwardMetricLine.FindStringSubmatch(line)
+		if match == nil {
+			for _, name := range []string{"gost_services", "gost_service_transfer_input_bytes_total", "gost_service_transfer_output_bytes_total", "gost_service_handler_errors_total"} {
+				if line == name || strings.HasPrefix(line, name+"{") || strings.HasPrefix(line, name+" ") || strings.HasPrefix(line, name+"\t") {
+					return 0, 0, 0, errors.New("metrics_invalid")
+				}
+			}
 			continue
 		}
-		key := strings.SplitN(fields[0], "{", 2)[0]
-		value, e := strconv.ParseFloat(fields[1], 64)
-		if e != nil || value < 0 || math.IsNaN(value) || math.IsInf(value, 0) || value > 8e15 {
-			continue
+		value, err := strconv.ParseFloat(match[2], 64)
+		if err != nil || value < 0 || math.IsNaN(value) || math.IsInf(value, 0) || value > 8e15 {
+			return 0, 0, 0, errors.New("metrics_invalid")
 		}
-		switch key {
+		switch match[1] {
+		case "gost_services":
+			marker = true
 		case "gost_service_transfer_input_bytes_total":
 			rx += value
 		case "gost_service_transfer_output_bytes_total":
 			tx += value
 		case "gost_service_handler_errors_total":
-			errors += value
+			failures += value
 		}
 	}
-	return uint64(math.Min(rx, 8e15)), uint64(math.Min(tx, 8e15)), uint64(math.Min(errors, 8e15))
+	if limited.N <= 0 {
+		return 0, 0, 0, errors.New("metrics_too_large")
+	}
+	if scanner.Err() != nil {
+		return 0, 0, 0, errors.New("metrics_read_failed")
+	}
+	if !marker {
+		return 0, 0, 0, errors.New("metrics_marker_missing")
+	}
+	if rx > 8e15 || tx > 8e15 || failures > 8e15 {
+		return 0, 0, 0, errors.New("metrics_invalid")
+	}
+	return uint64(rx), uint64(tx), uint64(failures), nil
 }
 
 func collectForwarding(parent context.Context, directory string) []ForwardSample {
@@ -89,15 +120,28 @@ func collectForwarding(parent context.Context, directory string) []ForwardSample
 				if json.Unmarshal(raw, &manifest) != nil || !forwardID.MatchString(manifest.ID) || !forwardID.MatchString(manifest.Epoch) || manifest.Port < 1 || manifest.Port > 65535 {
 					continue
 				}
-				sample := ForwardSample{ID: manifest.ID, Epoch: manifest.Epoch, Sampled: time.Now().Unix()}
+				sample := ForwardSample{ID: manifest.ID, Epoch: manifest.Epoch, Sampled: time.Now().Unix(), Error: "metrics_unreachable"}
 				req, _ := http.NewRequestWithContext(ctx, "GET", "http://127.0.0.1:"+strconv.Itoa(manifest.Port)+"/metrics", nil)
 				if response, e := client.Do(req); e == nil {
-					body, e := io.ReadAll(io.LimitReader(response.Body, 262145))
-					response.Body.Close()
-					if e == nil && response.StatusCode == 200 && len(body) <= 262144 && strings.Contains(string(body), "gost_services") {
-						sample.Available = true
-						sample.Rx, sample.Tx, sample.Errors = parseForwardMetrics(string(body))
+					if response.StatusCode == 200 {
+						rx, tx, failures, err := readForwardMetrics(response.Body)
+						if err != nil {
+							sample.Error = err.Error()
+						} else {
+							sample.Available, sample.Error = true, ""
+							sample.Rx, sample.Tx, sample.Errors = rx, tx, failures
+						}
+					} else {
+						sample.Error = "metrics_http_error"
 					}
+					response.Body.Close()
+				}
+				// A restart can replace the manifest while HTTP is being read.
+				afterRaw, err := os.ReadFile(path)
+				var after forwardManifest
+				if err != nil || json.Unmarshal(afterRaw, &after) != nil || after != manifest {
+					sample.Available, sample.Error = false, "metrics_process_changed"
+					sample.Rx, sample.Tx, sample.Errors = 0, 0, 0
 				}
 				mu.Lock()
 				samples = append(samples, sample)

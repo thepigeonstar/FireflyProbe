@@ -1,6 +1,6 @@
 # 萤火 · Firefly Probe
 
-轻量服务器监控工具，适合管Linux VPS。
+轻量服务器监控工具，适合管理约 10–50 台 Linux VPS，独立部署。
 
 - 实时网速、系统资源、运行时间、在线状态与 24 小时趋势。
 - 日/月/账单周期流量、额度与到期提醒、在线自动续期、Telegram 通知。
@@ -32,7 +32,7 @@ bash -o pipefail -c 'curl --proto "=https" --tlsv1.2 -fsS https://raw.githubuser
 - [插件开发](docs/wiki/Plugin-Development.md) · [GitHub Wiki](https://github.com/thepigeonstar/FireflyProbe/wiki)
 - [更新记录](CHANGELOG.md) · [验证记录](verification.md)
 
-主控：Node.js 24、SQLite、Docker。采集端：FireflyProbe 0.2.3，Go、systemd / OpenRC、vnStat。
+主控：Node.js 24、SQLite、Docker。采集端：FireflyProbe 0.2.4，Go、systemd / OpenRC、vnStat。
 
 卸载主控（保留配置与数据）：
 
