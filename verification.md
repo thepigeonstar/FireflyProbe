@@ -304,3 +304,8 @@ Installer locale hotfix: braced variables adjacent to Chinese punctuation in tim
 - Go 测试通过：大于旧 256 KiB 的真实指标集合 / HTTP 响应、标签空格和时间戳、无效计数、读取中断、16 MiB 体积与单行长度限制、HTTP 失败和采样期间重启检测。
 - Chrome 验证真实跨页拖放（前页到后页、后页到前页、末页不足十条）、方向键跨页与焦点、刷新轮询保持、搜索禁用拖拽、采样异常详情。6 项 Python 只读诊断测试通过。
 - Linux amd64 / arm64 采集端交叉构建并更新 SHA256SUMS。仅本地测试与打包，未上传 GitHub、未连接生产 VPS；不能声称已修正生产历史或实测完成真实 Linux 安装。
+
+## v0.2.39 · 2026-10-22
+
+- 采集端更新进度窗口复用已有 dialog-heading 布局，标题居左、关闭按钮居右。Chrome 验证桌面与手机布局、按钮关闭和重新打开。
+- 仅主控界面调整，采集端仍为 0.2.4；未操作生产服务器或上传远端。
