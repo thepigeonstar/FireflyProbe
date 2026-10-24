@@ -1,4 +1,11 @@
-import {dayKey} from './store.mjs';
+import {dayKey,validDate} from './store.mjs';
+
+export function trafficRankings(db,settings,params){
+ const today=dayKey(new Date(),settings.timezone),start=new Date(Date.parse(today+'T12:00:00Z')-(settings.keep_days-1)*864e5).toISOString().slice(0,10),date=params.get('date')||today;
+ if(!validDate(date)||date<start||date>today)throw Object.assign(Error('请选择数据保留范围内的日期'),{status:400});
+ const rows=db.prepare('SELECT n.id,n.name,n.country_override,n.country_code,COUNT(d.date) samples,SUM(d.rx) rx,SUM(d.tx) tx FROM nodes n LEFT JOIN daily d ON d.node_id=n.id AND d.date=? WHERE n.enabled=1 GROUP BY n.id ORDER BY SUM(d.rx)+SUM(d.tx) DESC,n.id').all(date).map(({samples,rx,tx,country_override,...n})=>({...n,country_code:country_override||n.country_code,has_sample:samples>0,rx:samples?rx:null,tx:samples?tx:null,total:samples?rx+tx:null}));
+ return {date,today,start,timezone:settings.timezone,rows};
+}
 
 export function trafficHistory(db,settings,params){
  const node=params.get('node'),period=params.get('period')||'daily',days=Number(params.get('days')||30);
