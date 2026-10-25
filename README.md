@@ -32,7 +32,7 @@ bash -o pipefail -c 'curl --proto "=https" --tlsv1.2 -fsS https://raw.githubuser
 - [插件开发](docs/wiki/Plugin-Development.md) · [GitHub Wiki](https://github.com/thepigeonstar/FireflyProbe/wiki)
 - [更新记录](CHANGELOG.md) · [验证记录](verification.md)
 
-主控：Node.js 24、SQLite、Docker。采集端：FireflyProbe 0.2.4，Go、systemd / OpenRC、vnStat。
+主控：Node.js 24、SQLite、Docker。采集端：FireflyProbe 0.2.5，Go、systemd / OpenRC、vnStat。
 
 卸载主控（保留配置与数据）：
 
@@ -42,6 +42,6 @@ bash -o pipefail -c 'curl --proto "=https" --tlsv1.2 -fsS https://raw.githubuser
 
 服务器列表和监控卡片可显示操作系统及版本（需采集端 0.2.1 或以上）。
 
-支持 SSH 管理 GOST TCP/UDP 明文转发，详见 [转发指南](docs/Forwarding.md)。公开页系统版本需管理员单独开启展示。
+支持 SSH 管理 GOST TCP/UDP 明文转发，可手动切换每台服务器一个共享进程，详见 [转发指南](docs/Forwarding.md)。公开页系统版本需管理员单独开启展示。
 
 旧 LightProbe 采集端可通过“服务器列表 → 全部更新采集端”迁移为 FireflyProbe，保留配置与流量历史；需要已配置 SSH。详见部署文档。

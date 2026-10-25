@@ -20,7 +20,7 @@ UUID = re.compile(r'^[a-f0-9-]{36}$')
 LIMIT = 2 * 1024 * 1024
 
 
-def parse_metrics(text):
+def parse_metrics(text, services=None):
     totals = dict(rx=0, tx=0, errors=0)
     legacy = dict(rx=0, tx=0, errors=0)
     seen = False
@@ -28,6 +28,10 @@ def parse_metrics(text):
         match = SAMPLE.fullmatch(line)
         if not match:
             continue
+        if services is not None:
+            label = re.search(r'(?:\{|,)\s*service="((?:\\.|[^"\\])*)"(?:,|\})', line)
+            if not label or json.loads('"'+label.group(1)+'"') not in services:
+                continue
         try:
             value = decimal.Decimal(match.group(2))
             if not value.is_finite() or value < 0 or value > 8e15:
@@ -41,7 +45,7 @@ def parse_metrics(text):
         fields = line.split()
         if len(fields) == 2:
             legacy[key] += int(value)
-    return totals, legacy, seen
+    return totals, legacy, seen or services is not None and 'gost_services' in text
 
 
 def network():
@@ -84,10 +88,11 @@ def collect(path):
         if len(raw) > LIMIT:
             result['error'] = 'Metrics 超过 2 MiB 诊断读取上限'
             return result
-        totals, legacy, seen = parse_metrics(raw.decode('utf-8', errors='replace'))
+        names = manifest.get('services') if manifest.get('format') == 2 else None
+        totals, legacy, seen = parse_metrics(raw.decode('utf-8', errors='replace'), names)
         with open(path, encoding='utf-8') as stream:
             after = json.load(stream)
-        if (after.get('epoch'), after.get('port')) != (manifest['epoch'], port):
+        if after != manifest:
             result['error'] = '采样期间服务重启，不能配对'
             return result
         result.update(ok=seen, totals=totals, legacy=legacy, agent_limit=len(raw) > 262144,
@@ -175,9 +180,9 @@ def compare(first, second, interface, expected_rule_ids=None):
             matched_rx += delta['rx']; matched_tx += delta['tx']
         flags = []
         if a.get('agent_limit') or b.get('agent_limit'):
-            flags.append('超过旧版采集端 256 KiB 上限（请更新至 0.2.4 流式采集）')
+            flags.append('超过旧版采集端 256 KiB 上限（请更新至 0.2.5 流式采集）')
         if a.get('parser_gap') or b.get('parser_gap'):
-            flags.append('原始计数与旧版采集解析不同（0.2.4 已兼容标签空格与时间戳）')
+            flags.append('原始计数与旧版采集解析不同（0.2.5 已兼容标签空格与时间戳）')
         if not a.get('agent_marker') or not b.get('agent_marker'):
             flags.append('缺少采集端要求的服务标记')
         if index < 30:

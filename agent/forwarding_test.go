@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 )
 
@@ -100,5 +101,41 @@ func TestForwardCollector(t *testing.T) {
 	samples = collectForwarding(context.Background(), dir)
 	if samples[0].Available || samples[0].Error != "metrics_process_changed" || samples[0].Rx != 0 {
 		t.Fatalf("restart race: %+v", samples)
+	}
+}
+
+func TestSharedCollectorReadsOnceAndSeparatesServices(t *testing.T) {
+	ids := []string{"aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee", "bbbbbbbb-cccc-dddd-eeee-ffffffffffff"}
+	generation := "cccccccc-dddd-eeee-ffff-aaaaaaaaaaaa"
+	names := []string{"ff-" + ids[0] + "-" + generation + "-tcp", "ff-" + ids[1] + "-" + generation + "-udp"}
+	var requests atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		fmt.Fprintf(w, "gost_services 2\ngost_service_transfer_input_bytes_total{service=%q,client=\"with space\"} 100\ngost_service_transfer_output_bytes_total{service=%q} 200\ngost_service_transfer_input_bytes_total{service=%q} 300\ngost_service_transfer_output_bytes_total{service=%q} 400\ngost_service_transfer_output_bytes_total{service=\"unrelated\"} 9000\n", names[0], names[0], names[1], names[1])
+	}))
+	defer server.Close()
+	port, _ := strconv.Atoi(strings.TrimPrefix(server.URL, "http://127.0.0.1:"))
+	dir := t.TempDir()
+	for i, id := range ids {
+		raw, _ := json.Marshal(forwardManifest{ID: id, Epoch: generation, Port: port, Format: 2, Services: []string{names[i]}})
+		os.WriteFile(filepath.Join(dir, id+".json"), raw, 0600)
+	}
+	samples := collectForwarding(context.Background(), dir)
+	if requests.Load() != 1 || len(samples) != 2 {
+		t.Fatalf("requests=%d samples=%+v", requests.Load(), samples)
+	}
+	for _, s := range samples {
+		if !s.Available {
+			t.Fatal(s)
+		}
+		if s.ID == ids[0] && (s.Rx != 100 || s.Tx != 200) || s.ID == ids[1] && (s.Rx != 300 || s.Tx != 400) {
+			t.Fatalf("mixed counters: %+v", samples)
+		}
+	}
+	// Names may not point at another rule, even when an endpoint is shared.
+	raw, _ := json.Marshal(forwardManifest{ID: ids[0], Epoch: generation, Port: port, Format: 2, Services: []string{names[1]}})
+	os.WriteFile(filepath.Join(dir, ids[0]+".json"), raw, 0600)
+	if got := collectForwarding(context.Background(), dir); len(got) != 1 || got[0].ID != ids[1] {
+		t.Fatalf("invalid mapping accepted: %+v", got)
 	}
 }

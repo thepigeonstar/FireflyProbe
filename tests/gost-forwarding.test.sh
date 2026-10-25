@@ -57,3 +57,5 @@ finally:
     logs.close()
     tcp.close(); udp.close()
 PY
+
+python3 -B tests/forward-engine-real.test.py "$temporary/gost"

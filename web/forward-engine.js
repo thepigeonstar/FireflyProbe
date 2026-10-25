@@ -1,0 +1,16 @@
+'use strict';
+let forwardEngineNode='',forwardEngineLoading=false,forwardEngineGeneration=0;
+function engineLog(text){return forwardingFriendlyLog(text).replace(/^FIREFLY_FINAL .*\n?/gm,'').replaceAll('FIREFLY_ENGINE_SHARED','共享进程已启用').replaceAll('FIREFLY_ENGINE_LEGACY','独立进程已恢复');}
+async function forwardEngineLoad(){
+ if(forwardEngineLoading||!$('#forwarding-dialog').open||!$('#forward-engine-state'))return;const id=forwardEngineNode,generation=forwardEngineGeneration;forwardEngineLoading=true;
+ try{const data=await api('/api/forwarding/engine?'+new URLSearchParams({node:id}));if(generation!==forwardEngineGeneration||!$('#forward-engine-state'))return;$('#forward-engine-state').textContent=(data.mode==='shared'?'共享进程 · 每台服务器一个 GOST':'独立进程 · 每条规则一个 GOST')+(data.status==='running'?' · 正在切换':data.status==='failed'?' · 上次操作未完成，请查看日志':'');$('#forward-engine-log').textContent=engineLog(data.log||'尚无引擎切换记录');$('#forward-engine-shared').disabled=data.status==='running';$('#forward-engine-legacy').disabled=data.status==='running';}
+ catch(e){if($('#forward-engine-state'))$('#forward-engine-state').textContent=e.message;}finally{forwardEngineLoading=false;}
+}
+function forwardEngineOpen(){
+ forwardingLogID=null;forwardingHistoryGeneration++;forwardEngineGeneration++;forwardEngineNode=forwardSelected||forwardingNodes.find(n=>n.engine?.mode==='shared'||forwardingRules.some(r=>r.node_id===n.id))?.id||'';$('#forwarding-dialog-title').textContent='转发引擎';$('#forwarding-dialog-content').innerHTML=`<label>服务器<select id="forward-engine-node">${forwardingNodes.filter(n=>n.engine?.mode==='shared'||forwardingRules.some(r=>r.node_id===n.id)).map(n=>`<option value="${n.id}">${escapeHTML(n.name)}</option>`).join('')}</select></label><p id="forward-engine-state">正在加载…</p><p>共享模式将本机多条规则合并到一个 GOST 进程，减少多进程的基础内存开销。每个监听端口仍是一条独立规则，可单独启停、编辑和统计流量。</p><p class="muted">先在服务器列表更新采集端至 0.2.5 或以上。切换与回退会短暂中断本机转发连接，保留规则和主控已保存的流量历史。共享进程故障会影响该机全部规则，节省内存的实际幅度取决于连接与流量。</p><div class="form-actions"><button type="button" class="primary" id="forward-engine-shared" disabled>切换共享进程</button><button type="button" class="secondary" id="forward-engine-legacy" disabled>回退独立进程</button></div><pre id="forward-engine-log" class="deployment-log"></pre>`;
+ $('#forward-engine-node').value=forwardEngineNode;$('#forward-engine-node').onchange=event=>{forwardEngineNode=event.target.value;forwardEngineGeneration++;$('#forward-engine-state').textContent='正在加载…';$('#forward-engine-log').textContent='';$('#forward-engine-shared').disabled=true;$('#forward-engine-legacy').disabled=true;forwardEngineLoad();};
+ for(const [selector,mode] of [['#forward-engine-shared','shared'],['#forward-engine-legacy','legacy']])$(selector).onclick=async()=>{if(!forwardEngineNode){toast('请先选择有转发规则的服务器');return;}if(!confirm((mode==='shared'?'切换共享进程':'回退独立进程')+'将短暂中断这台服务器的转发连接，继续？'))return;$('#forward-engine-shared').disabled=true;$('#forward-engine-legacy').disabled=true;try{await post('/api/forwarding/engine/'+forwardEngineNode,{mode});await forwardEngineLoad();}catch(e){toast(e.message);$(selector).disabled=false;}};
+ $('#forwarding-dialog').showModal();forwardEngineLoad();
+}
+$('#forward-engine-open').onclick=forwardEngineOpen;
+setInterval(forwardEngineLoad,2000);

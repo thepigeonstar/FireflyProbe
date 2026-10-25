@@ -1,6 +1,7 @@
 import {randomUUID} from 'node:crypto';
 import {isIP} from 'node:net';
 import {sshFields} from './ssh.mjs';
+import {sharedScript,finalSamples} from './forward-shared.mjs';
 import {dayKey} from './store.mjs';
 const fail=(status,message)=>{throw Object.assign(new Error(message),{status});};
 const quote=s=>"'"+String(s).replaceAll("'","'\\''")+"'";
@@ -19,7 +20,7 @@ export function forwardURLs(rule){const host=isIP(rule.target_host)===6?'['+rule
 export function forwardScript(rule,action){
  if(!/^[a-f0-9-]{36}$/.test(rule.id)||!['start','resume','stop','status','remove'].includes(action))fail(400,'转发操作无效');
  const unit='firefly-forward-'+rule.id,urls=forwardURLs(forwardingFields(rule));
- const pre=`#!/bin/sh\nset -eu\numask 077\nexport PYTHONUTF8=1 PYTHONIOENCODING=utf-8\n[ "$(id -u)" = 0 ] || { echo '需要 root 或免密 sudo'; exit 1; }\nunit=${quote(unit)}\nif command -v systemctl >/dev/null; then manager=systemd; elif [ -x /sbin/openrc-run ]; then manager=openrc; else echo '需要 systemd 或 OpenRC'; exit 1; fi\n`;
+ const pre=`#!/bin/sh\nset -eu\numask 077\nif [ -f /etc/firefly-forward-engine/state.json ] && [ "\${FIREFLY_ENGINE_INTERNAL:-0}" != 1 ]; then python3 -c 'import json; import sys; s=json.load(open("/etc/firefly-forward-engine/state.json")); sys.exit(1 if s.get("mode") in ("shared","migrating") else 0)' || { echo '该机器已由共享引擎管理，请在面板同步引擎模式后操作'; exit 1; }; fi\nexport PYTHONUTF8=1 PYTHONIOENCODING=utf-8\n[ "$(id -u)" = 0 ] || { echo '需要 root 或免密 sudo'; exit 1; }\nunit=${quote(unit)}\nif command -v systemctl >/dev/null; then manager=systemd; elif [ -x /sbin/openrc-run ]; then manager=openrc; else echo '需要 systemd 或 OpenRC'; exit 1; fi\n`;
  const status=`if [ "$manager" = systemd ]; then if systemctl is-active --quiet "$unit"; then echo FIREFLY_FORWARD_ACTIVE; else echo FIREFLY_FORWARD_STOPPED; fi; else if rc-service "$unit" status >/dev/null 2>&1; then echo FIREFLY_FORWARD_ACTIVE; else echo FIREFLY_FORWARD_STOPPED; fi; fi\n`;
  if(action==='status')return pre+status;
  if(action==='resume')return pre+`if [ "$manager" = systemd ]; then
@@ -131,6 +132,24 @@ echo FIREFLY_FORWARD_ACTIVE
 }
 export function createForwarding(db,ssh,timezone=()=> 'Asia/Shanghai'){
  const key=id=>'forwarding:'+id;
+ const sharedAgentReady=value=>{const m=/^(\d+)\.(\d+)\.(\d+)$/.exec(String(value||''));if(!m)return false;const [a,b,c]=m.slice(1).map(Number);return a>0||a===0&&(b>2||b===2&&c>=5);};
+ const sharedBusy=new Set(),engineKey=id=>'forward_engine:'+id;
+ const engineRead=id=>JSON.parse(db.prepare('SELECT value FROM settings WHERE key=?').get(engineKey(id))?.value||'{"mode":"legacy","status":"idle"}');
+ const engineSave=(id,value)=>db.prepare('INSERT INTO settings VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value').run(engineKey(id),JSON.stringify(value));
+ const engineMode=id=>engineRead(id).mode;
+ const engineRule=r=>({id:r.id,protocol:r.protocol,listen_port:r.listen_port,target_host:r.target_host,target_port:r.target_port,state:r.state,installed:installed(r),last_sampled:r.last_sampled??r.counter?.sampled??0});
+ function enginePayload(nodeID,action,extra={}){return {owner:nodeID,action,rules:records().filter(r=>r.node_id===nodeID).map(engineRule),...extra};}
+ function script(payload){return sharedScript(payload,{version:gostVersion,hashes:gostHashes});}
+ function acceptFinal(nodeID,job){const samples=finalSamples(job.log);if(samples.length)ingest(nodeID,samples,true);}
+ function engineFinish(nodeID,job){if(!db.isOpen)return;const value=engineRead(nodeID);if(value.checked_job===job.id)return;let finalError=false;try{acceptFinal(nodeID,job);}catch{finalError=true;}value.checked_job=job.id;value.status=job.status;value.log=job.log;const marker=value.target==='shared'?'FIREFLY_ENGINE_SHARED':'FIREFLY_ENGINE_LEGACY';if(job.status==='success'&&job.log.includes(marker)){value.mode=value.target;for(const r of records().filter(r=>r.node_id===nodeID)){delete r.cleanup_candidate;delete r.pending_edit;save(r);}}else if(job.status==='success'){value.status='failed';value.log+='缺少引擎确认标记，请核对后重试。';}if(finalError){value.status='failed';value.log+='最终采样未能入库，部署状态已记录，请核对流量。';}engineSave(nodeID,value);sharedBusy.delete(nodeID);}
+ function engineInfo(nodeID){let value=engineRead(nodeID);if(value.status==='running'){try{const job=ssh.status(value.job_id);if(job.status!=='running'){engineFinish(nodeID,job);value=engineRead(nodeID);}else return {...value,log:job.log};}catch{value.status='failed';value.log='引擎操作已中断，请重试相同切换或回退，核对远端状态。';engineSave(nodeID,value);sharedBusy.delete(nodeID);}}return value;}
+ function changeEngine(nodeID,target){const n=db.prepare('SELECT * FROM nodes WHERE id=?').get(nodeID);if(!n)fail(404,'服务器不存在');if(!n.enabled)fail(400,'请先启用服务器');if(!['shared','legacy'].includes(target))fail(400,'引擎模式无效');const value=engineInfo(nodeID);if(value.status==='running'||ssh.busy(nodeID))fail(409,'该服务器有任务正在执行');const own=records().filter(r=>r.node_id===nodeID);if(!own.length&&target==='shared')fail(400,'请先添加转发规则');if(own.some(r=>r.pending_edit||r.job_id&&(()=>{try{return ssh.status(r.job_id).status==='running';}catch{return false;}})()))fail(409,'规则任务未结束，请先完成');
+  if(target==='shared'&&!sharedAgentReady(n.last_version))fail(400,'请先更新采集端到 0.2.5 或以上，避免共享流量重复统计');
+  const legacy=target==='legacy'?own.filter(installed).map(r=>({id:r.id,script:forwardScript(r,'start')+(r.state==='stopped'?forwardScript(r,'stop'):'')})):[];
+  const payload=enginePayload(nodeID,target==='shared'?'migrate':'rollback',{legacy});sharedBusy.add(nodeID);let job;try{job=ssh.runManaged(nodeID,script(payload),done=>engineFinish(nodeID,done));}catch(e){sharedBusy.delete(nodeID);throw e;}engineSave(nodeID,{...value,target,status:'running',job_id:job.id,log:job.log,checked_job:null});return job;
+ }
+ function sharedAction(r,action,candidate){if(sharedBusy.has(r.node_id)||engineRead(r.node_id).status==='running')fail(409,'该服务器共享引擎正在操作');const payload=enginePayload(r.node_id,action,{id:r.id,...(candidate?{replacement_id:candidate.id}:{})});if(candidate)payload.rules.push(engineRule(candidate));sharedBusy.add(r.node_id);let job;try{job=ssh.runManaged(r.node_id,script(payload),done=>{if(!db.isOpen)return;try{acceptFinal(r.node_id,done);const current=db.prepare('SELECT value FROM settings WHERE key=?').get(key(r.id));if(current)reconcile(JSON.parse(current.value),done);}finally{sharedBusy.delete(r.node_id);}});}catch(e){sharedBusy.delete(r.node_id);throw e;}r.installed=installed(r);r.action=action;r.job_id=job.id;if(candidate)r.pending_edit=candidate;save(r);return job;}
+
  const records=()=>db.prepare("SELECT key,value FROM settings WHERE key LIKE 'forwarding:%'").all().map(r=>JSON.parse(r.value));
  const save=r=>db.prepare('INSERT INTO settings VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value').run(key(r.id),JSON.stringify(r));
  const erase=id=>{db.prepare('DELETE FROM settings WHERE key=?').run(key(id));for(const prefix of ['forward_month:','forward_day:'])db.prepare('DELETE FROM settings WHERE key LIKE ?').run(prefix+id+':%');};
@@ -144,9 +163,9 @@ export function createForwarding(db,ssh,timezone=()=> 'Asia/Shanghai'){
   const total=date=>{const sum={date,rx:0,tx:0};for(const r of rules){const row=db.prepare('SELECT value FROM settings WHERE key=?').get('forward_day:'+r.id+':'+date);if(row){const d=JSON.parse(row.value);sum.rx+=d.rx;sum.tx+=d.tx;}}return {...sum,total:sum.rx+sum.tx};};
   return {timezone:zone,rule_count:rules.length,today:total(today),yesterday:total(yesterday)};
  }
- function ingest(nodeID,samples){if(samples===undefined)return;if(!Array.isArray(samples)||samples.length>200)fail(400,'转发统计格式无效');for(const s of samples){
+ function ingest(nodeID,samples,force=false,agentVersion){if(!force&&(sharedBusy.has(nodeID)||engineRead(nodeID).status==='running'))return;if(!force&&engineMode(nodeID)==='shared'&&!sharedAgentReady(agentVersion)){for(const r of records().filter(r=>r.node_id===nodeID)){r.metrics_available=false;r.sample_error='共享模式需要采集端 0.2.5 或以上，已拒绝旧版混合采样';save(r);}return;}if(samples===undefined)return;if(!Array.isArray(samples)||samples.length>200)fail(400,'转发统计格式无效');for(const s of samples){
   if(!s||typeof s.id!=='string'||typeof s.epoch!=='string'||!/^[a-f0-9-]{36}$/.test(s.epoch)||!Number.isInteger(s.sampled)||s.sampled<1||s.sampled>Date.now()/1000+300||typeof s.available!=='boolean')fail(400,'转发统计样本无效');
-  const stored=db.prepare('SELECT value FROM settings WHERE key=?').get(key(s.id));if(!stored)continue;const r=JSON.parse(stored.value);if(r.node_id!==nodeID||r.pending_edit)continue;
+  const stored=db.prepare('SELECT value FROM settings WHERE key=?').get(key(s.id));if(!stored)continue;const r=JSON.parse(stored.value);if(r.node_id!==nodeID||r.pending_edit&&!force)continue;
   if(s.sampled<=(r.last_sampled??r.counter?.sampled??0))continue;
   r.last_sampled=s.sampled;
   if(!s.available){const reasons={metrics_unreachable:'无法连接本机 Metrics 或采样超时',metrics_http_error:'Metrics 返回非 200 状态',metrics_too_large:'Metrics 超过 16 MiB 读取上限',metrics_read_failed:'Metrics 读取中断、超时或单行过长',metrics_marker_missing:'Metrics 缺少服务标记',metrics_invalid:'Metrics 包含无效计数',metrics_process_changed:'采样期间服务重启，等待下次采样'};r.metrics_available=false;r.sample_error=Object.hasOwn(reasons,s.error)?reasons[s.error]:'采集端无法读取 Metrics（旧版未返回原因），请更新采集端后重试';save(r);continue;}
@@ -164,6 +183,7 @@ export function createForwarding(db,ssh,timezone=()=> 'Asia/Shanghai'){
    if(job.status==='success'&&r.action==='remove'){erase(r.id);return null;}save(r);}return {...r,job:job??null};}return r;}
  function collision(fields,nodeID,exclude,entries=records()){const protocols=p=>p==='both'?['tcp','udp']:[p];if(entries.filter(r=>r.id!==exclude).flatMap(r=>[r,r.pending_edit,r.cleanup_candidate].filter(Boolean)).some(r=>r.node_id===nodeID&&r.listen_port===fields.listen_port&&protocols(r.protocol).some(p=>protocols(fields.protocol).includes(p))))fail(409,'该服务器已有相同端口和协议的规则');}
  function update(id,input){const r=records().map(record=>reconcile(record)).filter(Boolean).find(r=>r.id===id);if(!r)fail(404,'规则不存在');delete r.job;if(ssh.busy(r.node_id))fail(409,'该服务器正在部署，请稍后修改');if(input.node_id!==undefined&&input.node_id!==r.node_id)fail(400,'编辑规则不能更换服务器');const fields=forwardingFields(input);collision(fields,r.node_id,r.id);if(!installed(r)&&r.state==='not_deployed'&&!r.job_id){save({...r,...fields});return {saved:true,id:r.id};}const candidate={id:randomUUID(),node_id:r.node_id,...fields,sort:r.sort,created:r.created};
+   if(engineMode(r.node_id)==='shared')return sharedAction(r,'edit',candidate);
    const leftover=r.pending_edit??r.cleanup_candidate;const newScript=(leftover?forwardScript(leftover,'remove'):'')+"echo '步骤 1/3：停止原规则服务。'\n"+forwardScript(r,'stop')+"echo '步骤 2/3：部署并启动新规则服务。'\n"+forwardScript(candidate,'start')+"echo '步骤 3/3：清理原规则服务文件，保留新规则运行。'\n"+forwardScript(r,'remove'),rollback=forwardScript(candidate,'remove')+(r.state==='not_deployed'?'':forwardScript(r,'start')+(r.state==='stopped'?forwardScript(r,'stop'):''));
    const script="set -eu\nif sh -s <<'FIREFLY_NEW_RULE'\n"+newScript+"FIREFLY_NEW_RULE\nthen\n"+"echo '修改部署成功，新规则已运行。'\necho FIREFLY_FORWARD_ACTIVE\nelse\n echo '修改部署失败，正在尝试恢复原规则…'\n if sh -s <<'FIREFLY_ROLLBACK_RULE'\n"+rollback+"FIREFLY_ROLLBACK_RULE\n then echo '原规则已恢复。'; else echo '原规则恢复失败，请检查上述日志和远端服务。'; fi\n exit 1\nfi\n";
    const job=ssh.runManaged(r.node_id,script,completed=>{if(!db.isOpen)return;const current=db.prepare('SELECT value FROM settings WHERE key=?').get(key(r.id));if(current)reconcile(JSON.parse(current.value),completed);});r.pending_edit=candidate;r.action='edit';r.job_id=job.id;save(r);return job;
@@ -171,7 +191,7 @@ export function createForwarding(db,ssh,timezone=()=> 'Asia/Shanghai'){
 
  return {
   list(){return records().map(record=>reconcile(record)).filter(Boolean).sort((a,b)=>(a.sort??a.created??0)-(b.sort??b.created??0)||a.id.localeCompare(b.id)).map(r=>({...r,installed:installed(r),traffic:traffic(r)}));},
-  ingest,history,dailyHistory,update,summary,
+  ingest,history,dailyHistory,update,summary,engineInfo,changeEngine,
   copy(input){
    if(!input||typeof input.source_node_id!=='string'||!Array.isArray(input.rule_ids)||!input.rule_ids.length||input.rule_ids.length>200||new Set(input.rule_ids).size!==input.rule_ids.length||!Array.isArray(input.target_node_ids)||!input.target_node_ids.length||input.target_node_ids.length>200||new Set(input.target_node_ids).size!==input.target_node_ids.length)fail(400,'请选择来源规则和目标服务器，不能重复');
    const all=records().map(r=>reconcile(r)).filter(Boolean),nodes=db.prepare('SELECT id,name FROM nodes').all(),targets=input.target_node_ids.map(id=>nodes.find(n=>n.id===id));if(!nodes.some(n=>n.id===input.source_node_id)||targets.some(n=>!n)||input.target_node_ids.includes(input.source_node_id))fail(400,'来源或目标服务器无效，不能复制到自身');
@@ -181,8 +201,8 @@ export function createForwarding(db,ssh,timezone=()=> 'Asia/Shanghai'){
    }db.exec('COMMIT');}catch(e){db.exec('ROLLBACK');throw e;}return {created,skipped};
   },
   reorder(nodeID,ids,expected){if(typeof nodeID!=='string'||!db.prepare('SELECT id FROM nodes WHERE id=?').get(nodeID))fail(404,'服务器不存在');const rules=records().filter(r=>r.node_id===nodeID);if(!Array.isArray(ids)||ids.length!==rules.length||new Set(ids).size!==ids.length||ids.some(id=>!rules.some(r=>r.id===id)))fail(400,'排序必须包含该服务器的全部规则，且不能重复');if(expected!==undefined){const current=[...rules].sort((a,b)=>(a.sort??a.created??0)-(b.sort??b.created??0)||a.id.localeCompare(b.id)).map(r=>r.id);if(!Array.isArray(expected)||JSON.stringify(expected)!==JSON.stringify(current))fail(409,'规则顺序已变化，请刷新后重试');}db.exec('BEGIN IMMEDIATE');try{ids.forEach((id,index)=>save({...rules.find(r=>r.id===id),sort:index}));db.exec('COMMIT');}catch(e){db.exec('ROLLBACK');throw e;}return {ok:true};},
-  hasNode(id){return records().map(record=>reconcile(record)).filter(Boolean).some(r=>r.node_id===id);},
+  hasNode(id){return engineMode(id)==='shared'||records().map(record=>reconcile(record)).filter(Boolean).some(r=>r.node_id===id);},
   add(input){if(!input||typeof input.node_id!=='string'||!/^[a-f0-9-]{36}$/.test(input.node_id))fail(400,'请选择有效服务器');if(records().length>=200)fail(400,'最多 200 条规则');const node=db.prepare('SELECT * FROM nodes WHERE id=?').get(input.node_id);if(!node)fail(404,'服务器不存在');if(!node.ssh_host||!node.ssh_password||!node.ssh_fingerprint)fail(400,'请先配置 SSH、测试连接并确认指纹');const fields=forwardingFields(input);collision(fields,node.id);const r={id:randomUUID(),node_id:node.id,...fields,sort:Math.max(-1,...records().filter(r=>r.node_id===node.id).map(r=>r.sort??r.created??0))+1,state:'not_deployed',installed:false,created:Math.floor(Date.now()/1000)};save(r);return r;},
-  action(id,action){const r=records().find(r=>r.id===id);if(!r)fail(404,'规则不存在');if(!['start','resume','stop','status','remove'].includes(action))fail(400,'转发操作无效');if(r.pending_edit&&action!=='remove')fail(409,'编辑任务未完成，请重新编辑部署，或删除规则后重建');if(action==='remove'&&!r.job_id&&r.state==='not_deployed'){erase(id);return {removed:true};}const leftover=r.pending_edit??r.cleanup_candidate;const script=(leftover?forwardScript(leftover,'remove'):'')+forwardScript(r,action);const job=ssh.runManaged(r.node_id,script);r.installed=installed(r);r.job_id=job.id;r.action=action;save(r);return job;}
+  action(id,action){const r=records().find(r=>r.id===id);if(!r)fail(404,'规则不存在');if(!['start','resume','stop','status','remove'].includes(action))fail(400,'转发操作无效');if(r.pending_edit&&action!=='remove')fail(409,'编辑任务未完成，请重新编辑部署，或删除规则后重建');if(action==='remove'&&!r.job_id&&r.state==='not_deployed'){erase(id);return {removed:true};}if(engineMode(r.node_id)==='shared')return sharedAction(r,action);const leftover=r.pending_edit??r.cleanup_candidate;const script=(leftover?forwardScript(leftover,'remove'):'')+forwardScript(r,action);const job=ssh.runManaged(r.node_id,script);r.installed=installed(r);r.job_id=job.id;r.action=action;save(r);return job;}
  };
 }

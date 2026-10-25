@@ -39,7 +39,7 @@ const sha = s => createHash('sha256').update(s).digest('hex');
 const token = () => randomBytes(32).toString('hex');
 const defaults = { timezone: 'Asia/Shanghai', interval: 5, offline_seconds: 45, keep_days: 180, trend_days: 7, report_enabled: false, report_hour: 8, report_minute: 0, thresholds: [80, 90, 95], telegram_token: '', telegram_chat: '' };
 const staticDir = fileURLToPath(new URL('../web/', import.meta.url));
-const publicFiles = new Map(['index.html', 'app.js', 'features.js','style.css','features.css','management.js','management.css','background.js','background.css','theme.js','theme.css', 'firefly.svg','public.html','public.js','plugin-host.js','remote-backup.js','traffic-history.js','forwarding.js','agent-batch.js','node-layout.js','node-layout.css','traffic-rankings.js','forward-group-order.js'].map(f => [f, readFileSync(join(staticDir, f))]));
+const publicFiles = new Map(['index.html', 'app.js', 'features.js','style.css','features.css','management.js','management.css','background.js','background.css','theme.js','theme.css', 'firefly.svg','public.html','public.js','plugin-host.js','remote-backup.js','traffic-history.js','forwarding.js','agent-batch.js','node-layout.js','node-layout.css','forward-engine.js','traffic-rankings.js','forward-group-order.js'].map(f => [f, readFileSync(join(staticDir, f))]));
 const downloads = new Map([
   ['/install-agent.sh', fileURLToPath(new URL('../agent/entry.sh', import.meta.url))],
   ['/downloads/google-auth.ps1',fileURLToPath(new URL('../tools/google-auth.ps1',import.meta.url))],
@@ -128,8 +128,8 @@ export async function createApp(options = {}) {
   const agentBatch=createAgentBatch(ssh,()=>db.prepare('SELECT * FROM nodes ORDER BY sort,name').all());
   function configuredNode(input,old={},id=old.id) {
     const fields={...nodeFields({...old,...input}),...sshFields(input,old)};fields.renewal_anchor_day=fields.expires?(fields.expires!==old.expires?Number(fields.expires.slice(-2)):old.renewal_anchor_day||Number(fields.expires.slice(-2))):0;
-    if(id&&forwarding.hasNode(id)&&(fields.ssh_host!==old.ssh_host||fields.ssh_port!==old.ssh_port||fields.ssh_user!==old.ssh_user))fail(409,'请先停止并删除转发规则，再更换 SSH 地址、端口或用户名');
-    if(id&&input.ssh_clear===true&&forwarding.hasNode(id))fail(409,'请先停止并删除转发规则，再清除 SSH 密码');
+    if(id&&forwarding.hasNode(id)&&(fields.ssh_host!==old.ssh_host||fields.ssh_port!==old.ssh_port||fields.ssh_user!==old.ssh_user))fail(409,'请先删除转发规则并回退独立进程，再更换 SSH 地址、端口或用户名');
+    if(id&&input.ssh_clear===true&&forwarding.hasNode(id))fail(409,'请先删除转发规则并回退独立进程，再清除 SSH 密码');
     if(input.ssh_password!==undefined){if(typeof input.ssh_password!=='string'||input.ssh_password.length>1024||input.ssh_password.includes('\0'))fail(400,'SSH 密码格式无效');if(input.ssh_password)fields.ssh_password=vault.seal(input.ssh_password,id);}
     if(input.country_override!==undefined){const code=input.country_override;if(typeof code!=='string'||code!==''&&(!/^[A-Z]{2}$/.test(code)||!publicFiles.has('flags/'+code.toLowerCase()+'.svg')))fail(400,'请选择有效国家，或自动识别');fields.country_override=code;}
     if(input.ssh_clear===true)fields.ssh_password='';
@@ -253,7 +253,7 @@ export async function createApp(options = {}) {
     const minute=Math.floor(stamp/60)*60;
     db.exec('BEGIN');
     try {
-      if (!previous || previous.minute!==minute) db.prepare('UPDATE nodes SET last_seen=?,last_version=? WHERE id=?').run(stamp,metrics.version,node.id);
+      if (!previous || previous.minute!==minute || previous.metrics.version!==metrics.version) db.prepare('UPDATE nodes SET last_seen=?,last_version=? WHERE id=?').run(stamp,metrics.version,node.id);
       if(previous && previous.minute!==minute) flushMinute(node.id,previous);
       if(!node.interface) db.prepare('UPDATE nodes SET interface=? WHERE id=?').run(metrics.interface,node.id);
       if (historyIncluded) {
@@ -270,7 +270,7 @@ export async function createApp(options = {}) {
           if(regression) db.prepare('UPDATE nodes SET history_error=? WHERE id=?').run('vnStat 日流量低于已保存值，已保留原值；请检查节点数据库是否重置',node.id);
         }
       }
-      forwarding.ingest(node.id,data.forwarding);
+      forwarding.ingest(node.id,data.forwarding,false,metrics.version);
       db.exec('COMMIT');
     } catch(e) { db.exec('ROLLBACK'); throw e; }
     const a=previous?.minute===minute?previous.aggregate:{rx:0,tx:0,cpu:0,mem:0,count:0};
@@ -399,6 +399,8 @@ export async function createApp(options = {}) {
         if(path==='/api/forwarding/alerts'&&method==='GET')return send(res,200,forwardAlerts.config());
         if(path==='/api/forwarding/alerts'&&method==='PUT')return send(res,200,forwardAlerts.save(await body(req)));
         if(path.startsWith('/api/forwarding')&&['POST','PUT','DELETE'].includes(method)&&forwardBatch.busy)fail(409,'转发安装 / 更新队列正在执行，请完成后再修改规则');
+        if(path==='/api/forwarding/engine'&&method==='GET'){const id=new URL(req.url,'http://localhost').searchParams.get('node');if(!getNodes().some(n=>n.id===id))fail(404,'服务器不存在');return send(res,200,forwarding.engineInfo(id));}
+        const engineRoute=/^\/api\/forwarding\/engine\/([a-f0-9-]{36})$/.exec(path);if(engineRoute&&method==='POST')return send(res,202,forwarding.changeEngine(engineRoute[1],(await body(req)).mode));
         if(path==='/api/forwarding/traffic'&&method==='GET')return send(res,200,forwardServerHistory(db,settings.timezone,new URL(req.url,'http://localhost').searchParams));
         if(path==='/api/forwarding/groups'&&method==='GET')return send(res,200,forwardGroups.list());
         if(path==='/api/forwarding/groups'&&method==='POST')return send(res,201,forwardGroups.write(await body(req)));
@@ -410,7 +412,7 @@ export async function createApp(options = {}) {
         if(path==='/api/forwarding/copy'&&method==='POST')return send(res,201,forwarding.copy(await body(req)));
         const forwardingHistory=/^\/api\/forwarding\/([a-f0-9-]{36})\/history$/.exec(path);if(forwardingHistory&&method==='GET'){const month=new URL(req.url,'http://localhost').searchParams.get('month');return send(res,200,{...(month?forwarding.dailyHistory(forwardingHistory[1],month):{months:forwarding.history(forwardingHistory[1])}),timezone:settings.timezone});}
         if(path==='/api/forwarding/order'&&method==='POST'){const data=await body(req);return send(res,200,forwarding.reorder(data.node_id,data.ids,data.expected_ids));}
-        if(path==='/api/forwarding'&&method==='GET'){const rules=forwarding.list(),all=snapshot(),involved=new Set(rules.map(r=>r.node_id)),included=all.filter(n=>n.enabled&&involved.has(n.id)),today=included.reduce((t,n)=>({rx:t.rx+n.traffic.today.rx,tx:t.tx+n.traffic.today.tx}),{rx:0,tx:0});return send(res,200,{rules:rules.map(r=>({...r,urls:forwardURLs(r)})),nodes:all.map(n=>({id:n.id,name:n.name,enabled:n.enabled,status:n.status,country_code:n.country_code,today:n.traffic.today,history_seen:n.history_seen,history_error:n.history_error,history_timezone:n.history_timezone,gost_today:forwarding.summary(undefined,n.id).today})),groups:forwardGroups.list(),interface_summary:{timezone:settings.timezone,server_count:included.length,today:{...today,total:today.rx+today.tx},stale_count:included.filter(n=>!n.history_seen||now()-n.history_seen>900||n.history_error||n.history_timezone!==settings.timezone).length},events:forwardAlerts.history(),batch:forwardBatch.view(),gost_version:gostVersion,summary:forwarding.summary()});}
+        if(path==='/api/forwarding'&&method==='GET'){const rules=forwarding.list(),all=snapshot(),involved=new Set(rules.map(r=>r.node_id)),included=all.filter(n=>n.enabled&&involved.has(n.id)),today=included.reduce((t,n)=>({rx:t.rx+n.traffic.today.rx,tx:t.tx+n.traffic.today.tx}),{rx:0,tx:0});return send(res,200,{rules:rules.map(r=>({...r,urls:forwardURLs(r)})),nodes:all.map(n=>({id:n.id,name:n.name,enabled:n.enabled,status:n.status,country_code:n.country_code,engine:(({mode,status,target})=>({mode,status,target}))(forwarding.engineInfo(n.id)),agent_version:n.last_version,today:n.traffic.today,history_seen:n.history_seen,history_error:n.history_error,history_timezone:n.history_timezone,gost_today:forwarding.summary(undefined,n.id).today})),groups:forwardGroups.list(),interface_summary:{timezone:settings.timezone,server_count:included.length,today:{...today,total:today.rx+today.tx},stale_count:included.filter(n=>!n.history_seen||now()-n.history_seen>900||n.history_error||n.history_timezone!==settings.timezone).length},events:forwardAlerts.history(),batch:forwardBatch.view(),gost_version:gostVersion,summary:forwarding.summary()});}
         if(path==='/api/forwarding'&&method==='POST')return send(res,201,forwarding.add(await body(req)));
         const forwardingEdit=/^\/api\/forwarding\/([a-f0-9-]{36})$/.exec(path);if(forwardingEdit&&method==='PUT')return send(res,202,forwarding.update(forwardingEdit[1],await body(req)));
         const forwardingAction=/^\/api\/forwarding\/([a-f0-9-]{36})\/(start|resume|stop|status|remove)$/.exec(path);
@@ -450,7 +452,7 @@ export async function createApp(options = {}) {
         const sshRoute=/^\/api\/nodes\/([a-f0-9-]{36})\/ssh\/(probe|trust|test|deploy)$/.exec(path);
         if(sshRoute&&method==='POST'){const [unused,id,action]=sshRoute;if(action==='probe')return send(res,200,await ssh.probe(id));if(action==='trust'){const input=await body(req);ssh.trust(id,input.fingerprint);return send(res,200,{ok:true});}if(action==='test')return send(res,200,await ssh.test(id));return send(res,202,ssh.deploy(id));}
         const jobRoute=/^\/api\/ssh\/jobs\/([a-f0-9-]{36})$/.exec(path);if(jobRoute&&method==='GET')return send(res,200,ssh.status(jobRoute[1]));
-        if(path==='/api/nodes'&&method==='GET') {const rates=fx.read();const {rates:unused,...fxInfo}=rates;return send(res,200,{nodes:snapshot(),settings:safeSettings(),cost_summary:costSummary(getNodes(),rates),fx_info:fxInfo,server_time:now(),version:'0.2.41',agent_version:'0.2.4'});}
+        if(path==='/api/nodes'&&method==='GET') {const rates=fx.read();const {rates:unused,...fxInfo}=rates;return send(res,200,{nodes:snapshot(),settings:safeSettings(),cost_summary:costSummary(getNodes(),rates),fx_info:fxInfo,server_time:now(),version:'0.2.42',agent_version:'0.2.5'});}
         const adminNetwork=/^\/api\/nodes\/([a-f0-9-]{36})\/network-history$/.exec(path);if(adminNetwork&&method==='GET')return send(res,200,publicHistory(adminNetwork[1],true));
         if(path==='/api/network/history'&&method==='GET')return send(res,200,publicHistory('network',true));
         if(path==='/api/costs'&&method==='GET')return send(res,200,{...costSummary(getNodes(),fx.read()),fx:fx.read()});
@@ -486,7 +488,7 @@ export async function createApp(options = {}) {
             writeNode(node.id,n);
             return send(res,200,{ok:true});
           }
-          if(!match[2]&&method==='DELETE') {if(forwarding.hasNode(node.id))fail(409,'请先删除该服务器的转发规则，再删除服务器');if(ssh.busy(node.id))fail(409,'部署中不能删除服务器');db.prepare('DELETE FROM nodes WHERE id=?').run(node.id);db.prepare('DELETE FROM settings WHERE key=?').run('node_system:'+node.id);latest.delete(node.id);noticeState.delete(node.id);geoAttempts.delete(node.id);geoPending.delete(node.id);publicCache=null;return send(res,200,{ok:true});}
+          if(!match[2]&&method==='DELETE') {if(forwarding.hasNode(node.id))fail(409,'请先删除转发规则并回退独立进程，再删除服务器');if(ssh.busy(node.id))fail(409,'部署中不能删除服务器');db.prepare('DELETE FROM nodes WHERE id=?').run(node.id);db.prepare('DELETE FROM settings WHERE key=?').run('node_system:'+node.id);latest.delete(node.id);noticeState.delete(node.id);geoAttempts.delete(node.id);geoPending.delete(node.id);publicCache=null;return send(res,200,{ok:true});}
         }
         if(path==='/api/settings'&&method==='GET') return send(res,200,editableSettings());
         if(path==='/api/settings'&&method==='PUT') {const input=await body(req),updated=settingsFields(input,settings);if(input.notification_targets!==undefined){const reportChanged=JSON.stringify(settings.notification_targets?.report??null)!==JSON.stringify(updated.notification_targets.report);for(const job of db.prepare("SELECT id,event_key FROM outbox WHERE status='pending'").all()){const [kind,id]=job.event_key.split(':'),type=({quota:'quota',offline:'offline',recovery:'offline','forward-failure':'offline','forward-recovery':'offline',resource:'resource','resource-recovery':'resource',expiry:'expiry',expired:'expiry'})[kind];if((kind==='daily'&&reportChanged)||(type&&!notificationSelected(updated,type,id)))db.prepare("UPDATE outbox SET event_key=event_key||?,status='failed',error='通知服务器范围调整，已取消待发送通知' WHERE id=?").run(':scope-'+randomUUID(),job.id);}}persistTelegramSettings(db,vault,updated);const pathChanged=settings.admin_path!==updated.admin_path;settings=updated;publicCache=null;publicHistoryCache.clear();if(pathChanged){sessions.clear();res.setHeader('Set-Cookie','lp_session=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0');}return send(res,200,{...editableSettings(),redirect_admin:pathChanged?settings.admin_path:undefined});}
@@ -526,6 +528,6 @@ export async function createApp(options = {}) {
 function formatBytes(bytes) {const units=['B','KiB','MiB','GiB','TiB'];let i=0;while(bytes>=1024&&i<4){bytes/=1024;i++;}return bytes.toFixed(1)+' '+units[i];}
 if(process.argv[1] && import.meta.url===pathToFileURL(resolve(process.argv[1])).href) {
   const app=await createApp();
-  app.server.listen(Number(process.env.PORT ?? 8080),process.env.HOST ?? '127.0.0.1',()=>console.log(`Firefly Probe 0.2.41 listening on ${process.env.HOST ?? '127.0.0.1'}:${process.env.PORT ?? 8080}`));
+  app.server.listen(Number(process.env.PORT ?? 8080),process.env.HOST ?? '127.0.0.1',()=>console.log(`Firefly Probe 0.2.42 listening on ${process.env.HOST ?? '127.0.0.1'}:${process.env.PORT ?? 8080}`));
   let stopping=false;for(const sig of ['SIGINT','SIGTERM']) process.on(sig,async()=>{if(stopping)return;stopping=true;await app.close();process.exit(0);});
 }

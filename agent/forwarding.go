@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -28,19 +29,30 @@ type ForwardSample struct {
 	Error     string `json:"error,omitempty"`
 }
 type forwardManifest struct {
-	ID    string `json:"id"`
-	Epoch string `json:"epoch"`
-	Port  int    `json:"port"`
+	ID       string   `json:"id"`
+	Epoch    string   `json:"epoch"`
+	Port     int      `json:"port"`
+	Format   int      `json:"format,omitempty"`
+	Services []string `json:"services,omitempty"`
+}
+
+type forwardCount struct{ Rx, Tx, Errors float64 }
+type forwardItem struct {
+	path     string
+	raw      []byte
+	manifest forwardManifest
 }
 
 var forwardID = regexp.MustCompile(`^[a-f0-9-]{36}$`)
 var forwardMetricLine = regexp.MustCompile(`^(gost_services|gost_service_transfer_input_bytes_total|gost_service_transfer_output_bytes_total|gost_service_handler_errors_total)(?:\{.*\})?[ \t]+(\S+)(?:[ \t]+[+-]?\d+)?$`)
+var forwardServiceLabel = regexp.MustCompile(`(?:\{|,)\s*service="((?:\\.|[^"\\])*)"(?:,|\})`)
+var forwardServiceName = regexp.MustCompile(`^ff-[a-f0-9-]{36}-[a-f0-9-]{36}-(tcp|udp)$`)
 
 const forwardMetricsLimit = 16 * 1024 * 1024
 
 // Stream the response: client labels can grow well beyond 256 KiB. Never
 // accept a partial response as a smaller counter or hold it all in memory.
-func readForwardMetrics(reader io.Reader) (uint64, uint64, uint64, error) {
+func readForwardMetrics(reader io.Reader, split ...map[string]*forwardCount) (uint64, uint64, uint64, error) {
 	limited := &io.LimitedReader{R: reader, N: forwardMetricsLimit + 1}
 	scanner := bufio.NewScanner(limited)
 	scanner.Buffer(make([]byte, 4096), 65536)
@@ -71,6 +83,22 @@ func readForwardMetrics(reader io.Reader) (uint64, uint64, uint64, error) {
 		case "gost_service_handler_errors_total":
 			failures += value
 		}
+		if len(split) > 0 {
+			label := forwardServiceLabel.FindStringSubmatch(line)
+			if len(label) == 2 {
+				name, err := strconv.Unquote(`"` + label[1] + `"`)
+				if counter := split[0][name]; err == nil && counter != nil {
+					switch match[1] {
+					case "gost_service_transfer_input_bytes_total":
+						counter.Rx += value
+					case "gost_service_transfer_output_bytes_total":
+						counter.Tx += value
+					case "gost_service_handler_errors_total":
+						counter.Errors += value
+					}
+				}
+			}
+		}
 	}
 	if limited.N <= 0 {
 		return 0, 0, 0, errors.New("metrics_too_large")
@@ -99,9 +127,40 @@ func collectForwarding(parent context.Context, directory string) []ForwardSample
 	defer cancel()
 	client := &http.Client{Timeout: 2 * time.Second, Transport: &http.Transport{Proxy: nil}, CheckRedirect: func(req *http.Request, via []*http.Request) error { return http.ErrUseLastResponse }}
 	defer client.CloseIdleConnections()
-	queue := make(chan string, len(paths))
+	groups := map[int][]forwardItem{}
 	for _, path := range paths {
-		queue <- path
+		raw, err := os.ReadFile(path)
+		if err != nil || len(raw) > 4096 {
+			continue
+		}
+		var m forwardManifest
+		if json.Unmarshal(raw, &m) != nil || !forwardID.MatchString(m.ID) || !forwardID.MatchString(m.Epoch) || m.Port < 1 || m.Port > 65535 {
+			continue
+		}
+		if m.Format != 0 && m.Format != 2 {
+			continue
+		}
+		if m.Format == 2 {
+			if len(m.Services) < 1 || len(m.Services) > 2 {
+				continue
+			}
+			valid := true
+			for _, name := range m.Services {
+				if !forwardServiceName.MatchString(name) || !strings.HasPrefix(name, "ff-"+m.ID+"-") {
+					valid = false
+				}
+			}
+			if !valid {
+				continue
+			}
+		} else if len(m.Services) > 0 {
+			continue
+		}
+		groups[m.Port] = append(groups[m.Port], forwardItem{path, raw, m})
+	}
+	queue := make(chan []forwardItem, len(groups))
+	for _, group := range groups {
+		queue <- group
 	}
 	close(queue)
 	var mu sync.Mutex
@@ -111,20 +170,18 @@ func collectForwarding(parent context.Context, directory string) []ForwardSample
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			for path := range queue {
-				raw, e := os.ReadFile(path)
-				if e != nil || len(raw) > 4096 {
-					continue
+			for group := range queue {
+				counts := map[string]*forwardCount{}
+				for _, item := range group {
+					for _, name := range item.manifest.Services {
+						counts[name] = &forwardCount{}
+					}
 				}
-				var manifest forwardManifest
-				if json.Unmarshal(raw, &manifest) != nil || !forwardID.MatchString(manifest.ID) || !forwardID.MatchString(manifest.Epoch) || manifest.Port < 1 || manifest.Port > 65535 {
-					continue
-				}
-				sample := ForwardSample{ID: manifest.ID, Epoch: manifest.Epoch, Sampled: time.Now().Unix(), Error: "metrics_unreachable"}
-				req, _ := http.NewRequestWithContext(ctx, "GET", "http://127.0.0.1:"+strconv.Itoa(manifest.Port)+"/metrics", nil)
+				sample := ForwardSample{Sampled: time.Now().Unix(), Error: "metrics_unreachable"}
+				req, _ := http.NewRequestWithContext(ctx, "GET", "http://127.0.0.1:"+strconv.Itoa(group[0].manifest.Port)+"/metrics", nil)
 				if response, e := client.Do(req); e == nil {
 					if response.StatusCode == 200 {
-						rx, tx, failures, err := readForwardMetrics(response.Body)
+						rx, tx, failures, err := readForwardMetrics(response.Body, counts)
 						if err != nil {
 							sample.Error = err.Error()
 						} else {
@@ -136,16 +193,29 @@ func collectForwarding(parent context.Context, directory string) []ForwardSample
 					}
 					response.Body.Close()
 				}
-				// A restart can replace the manifest while HTTP is being read.
-				afterRaw, err := os.ReadFile(path)
-				var after forwardManifest
-				if err != nil || json.Unmarshal(afterRaw, &after) != nil || after != manifest {
-					sample.Available, sample.Error = false, "metrics_process_changed"
-					sample.Rx, sample.Tx, sample.Errors = 0, 0, 0
+				for _, item := range group {
+					value := sample
+					value.ID, value.Epoch = item.manifest.ID, item.manifest.Epoch
+					if value.Available && item.manifest.Format == 2 {
+						var rx, tx, failures float64
+						for _, name := range item.manifest.Services {
+							c := counts[name]
+							rx += c.Rx
+							tx += c.Tx
+							failures += c.Errors
+						}
+						value.Rx, value.Tx, value.Errors = uint64(rx), uint64(tx), uint64(failures)
+					}
+					// Re-read each mapping: a live API edit can change one service only.
+					afterRaw, err := os.ReadFile(item.path)
+					if err != nil || !bytes.Equal(afterRaw, item.raw) {
+						value.Available, value.Error = false, "metrics_process_changed"
+						value.Rx, value.Tx, value.Errors = 0, 0, 0
+					}
+					mu.Lock()
+					samples = append(samples, value)
+					mu.Unlock()
 				}
-				mu.Lock()
-				samples = append(samples, sample)
-				mu.Unlock()
 			}
 		}()
 	}
