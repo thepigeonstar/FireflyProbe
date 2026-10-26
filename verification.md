@@ -328,3 +328,8 @@ Installer locale hotfix: braced variables adjacent to Chinese punctuation in tim
 - 6 项共享控制器 Python 测试通过：迁移、单条启停 / 编辑隔离、失败恢复旧进程、失败编辑恢复、归属检查、按服务最终采样、失败回退恢复共享、只读状态检查。6 项原诊断 Python 测试通过。
 - Chrome 验证服务器选择、每台独立模式、切换和回退状态轮询、日志脱敏呈现、前置条件与断流提示、移动端和关闭。界面使用模拟任务，未连接真实 VPS。
 - tests/forward-engine-real.test.py 已接入官方 Linux GOST 的 CI 检查，验证真实迁移、单进程 TCP / UDP、分服务计数、保留其他规则长连接、冲突编辑回退和回退独立；当前 Windows 环境未执行该 Linux 集成检查，需上传后以 GitHub Check 结果为准。systemd / OpenRC 的真实服务迁移未在本机运行，不声称已在生产验证。
+
+## v0.2.43 · 2026-10-26
+
+- 113 项 Node 测试通过，现有认证、部署与转发统计回归无失败。新增界面未改变远端部署或采集协议，采集端保持 0.2.5。
+- work/browser-0243.mjs Chrome 检查通过：左侧模式标签、所有转发服务器列表与数量、共享 / 独立 / 未部署 / 切换中 / 失败区分、按钮状态、快速选择时慢响应不覆盖新服务器、切换后自动刷新、关闭重开、深色与手机宽度、长列表滚动。任务响应使用模拟数据，未连接生产 VPS。
