@@ -11,6 +11,7 @@ import {pluginFrame,pluginNodes} from './plugin-frame.mjs';
 import {createPluginAccess,pluginScopes} from './plugin-access.mjs';
 import {createAgentBatch} from './agent-batch.mjs';
 import {createForwarding,forwardURLs,gostVersion} from './forwarding.mjs';
+import {createForwardRelay} from './forward-relay.mjs';
 import {createForwardBatch} from './forward-batch.mjs';
 import {createForwardAlerts} from './forward-alerts.mjs';
 import {publicNodeName} from './public-name.mjs';
@@ -39,7 +40,7 @@ const sha = s => createHash('sha256').update(s).digest('hex');
 const token = () => randomBytes(32).toString('hex');
 const defaults = { timezone: 'Asia/Shanghai', interval: 5, offline_seconds: 45, keep_days: 180, trend_days: 7, report_enabled: false, report_hour: 8, report_minute: 0, thresholds: [80, 90, 95], telegram_token: '', telegram_chat: '' };
 const staticDir = fileURLToPath(new URL('../web/', import.meta.url));
-const publicFiles = new Map(['index.html', 'app.js', 'features.js','style.css','features.css','management.js','management.css','background.js','background.css','theme.js','theme.css', 'firefly.svg','public.html','public.js','plugin-host.js','remote-backup.js','traffic-history.js','forwarding.js','agent-batch.js','node-layout.js','node-layout.css','forward-engine.js','traffic-rankings.js','forward-group-order.js'].map(f => [f, readFileSync(join(staticDir, f))]));
+const publicFiles = new Map(['index.html', 'app.js', 'features.js','style.css','features.css','management.js','management.css','background.js','background.css','theme.js','theme.css', 'firefly.svg','public.html','public.js','plugin-host.js','remote-backup.js','traffic-history.js','forwarding.js','agent-batch.js','node-layout.js','node-layout.css','forward-engine.js','forward-relay.js','traffic-rankings.js','forward-group-order.js'].map(f => [f, readFileSync(join(staticDir, f))]));
 const downloads = new Map([
   ['/install-agent.sh', fileURLToPath(new URL('../agent/entry.sh', import.meta.url))],
   ['/downloads/google-auth.ps1',fileURLToPath(new URL('../tools/google-auth.ps1',import.meta.url))],
@@ -122,6 +123,7 @@ export async function createApp(options = {}) {
   const pluginAccess=createPluginAccess(db,plugins),pluginCalls=new Map();
   const ssh=createSSH({db,vault,publicURL,bootstrap:readFileSync(fileURLToPath(new URL('../agent/entry.sh',import.meta.url)),'utf8'),ClientClass:options.sshClient});
   const forwarding=createForwarding(db,ssh,()=>settings.timezone);
+  const forwardRelay=createForwardRelay(db,forwarding,ssh,()=>getNodes());
   const forwardGroups=createForwardGroups(db);
   const forwardAlerts=createForwardAlerts(db);
   const forwardBatch=createForwardBatch(forwarding,ssh,()=>db.prepare('SELECT * FROM nodes ORDER BY sort,name').all());
@@ -401,6 +403,11 @@ export async function createApp(options = {}) {
         if(path.startsWith('/api/forwarding')&&['POST','PUT','DELETE'].includes(method)&&forwardBatch.busy)fail(409,'转发安装 / 更新队列正在执行，请完成后再修改规则');
         if(path==='/api/forwarding/engine'&&method==='GET'){const id=new URL(req.url,'http://localhost').searchParams.get('node');if(!getNodes().some(n=>n.id===id))fail(404,'服务器不存在');return send(res,200,forwarding.engineInfo(id));}
         const engineRoute=/^\/api\/forwarding\/engine\/([a-f0-9-]{36})$/.exec(path);if(engineRoute&&method==='POST')return send(res,202,forwarding.changeEngine(engineRoute[1],(await body(req)).mode));
+        if(path==='/api/forwarding/relay'&&method==='GET'){const rule=new URL(req.url,'http://localhost').searchParams.get('rule');return send(res,200,{plan:forwardRelay.latest(rule)});}
+        const relayBegin=/^\/api\/forwarding\/([a-f0-9-]{36})\/relay$/.exec(path);if(relayBegin&&method==='POST')return send(res,202,forwardRelay.begin(relayBegin[1],await body(req)));
+        const relayRoute=/^\/api\/forwarding\/relay\/([a-f0-9-]{36})(?:\/(apply|cancel))?$/.exec(path);
+        if(relayRoute&&method==='GET'&&!relayRoute[2])return send(res,200,forwardRelay.view(relayRoute[1]));
+        if(relayRoute&&method==='POST'&&relayRoute[2])return send(res,202,forwardRelay[relayRoute[2]](relayRoute[1]));
         if(path==='/api/forwarding/traffic'&&method==='GET')return send(res,200,forwardServerHistory(db,settings.timezone,new URL(req.url,'http://localhost').searchParams));
         if(path==='/api/forwarding/groups'&&method==='GET')return send(res,200,forwardGroups.list());
         if(path==='/api/forwarding/groups'&&method==='POST')return send(res,201,forwardGroups.write(await body(req)));
@@ -412,7 +419,7 @@ export async function createApp(options = {}) {
         if(path==='/api/forwarding/copy'&&method==='POST')return send(res,201,forwarding.copy(await body(req)));
         const forwardingHistory=/^\/api\/forwarding\/([a-f0-9-]{36})\/history$/.exec(path);if(forwardingHistory&&method==='GET'){const month=new URL(req.url,'http://localhost').searchParams.get('month');return send(res,200,{...(month?forwarding.dailyHistory(forwardingHistory[1],month):{months:forwarding.history(forwardingHistory[1])}),timezone:settings.timezone});}
         if(path==='/api/forwarding/order'&&method==='POST'){const data=await body(req);return send(res,200,forwarding.reorder(data.node_id,data.ids,data.expected_ids));}
-        if(path==='/api/forwarding'&&method==='GET'){const rules=forwarding.list(),all=snapshot(),involved=new Set(rules.map(r=>r.node_id)),included=all.filter(n=>n.enabled&&involved.has(n.id)),today=included.reduce((t,n)=>({rx:t.rx+n.traffic.today.rx,tx:t.tx+n.traffic.today.tx}),{rx:0,tx:0});return send(res,200,{rules:rules.map(r=>({...r,urls:forwardURLs(r)})),nodes:all.map(n=>({id:n.id,name:n.name,enabled:n.enabled,status:n.status,country_code:n.country_code,engine:(({mode,status,target})=>({mode,status,target}))(forwarding.engineInfo(n.id)),agent_version:n.last_version,today:n.traffic.today,history_seen:n.history_seen,history_error:n.history_error,history_timezone:n.history_timezone,gost_today:forwarding.summary(undefined,n.id).today})),groups:forwardGroups.list(),interface_summary:{timezone:settings.timezone,server_count:included.length,today:{...today,total:today.rx+today.tx},stale_count:included.filter(n=>!n.history_seen||now()-n.history_seen>900||n.history_error||n.history_timezone!==settings.timezone).length},events:forwardAlerts.history(),batch:forwardBatch.view(),gost_version:gostVersion,summary:forwarding.summary()});}
+        if(path==='/api/forwarding'&&method==='GET'){const rules=forwarding.list(),routes=forwardRelay.routes(rules),all=snapshot(),involved=new Set(rules.map(r=>r.node_id)),included=all.filter(n=>n.enabled&&involved.has(n.id)),today=included.reduce((t,n)=>({rx:t.rx+n.traffic.today.rx,tx:t.tx+n.traffic.today.tx}),{rx:0,tx:0});return send(res,200,{rules:rules.map(r=>({...r,urls:forwardURLs(r),relay_route:routes[r.id]||null})),nodes:all.map(n=>({id:n.id,name:n.name,enabled:n.enabled,status:n.status,country_code:n.country_code,engine:(({mode,status,target})=>({mode,status,target}))(forwarding.engineInfo(n.id)),agent_version:n.last_version,today:n.traffic.today,history_seen:n.history_seen,history_error:n.history_error,history_timezone:n.history_timezone,gost_today:forwarding.summary(undefined,n.id).today})),groups:forwardGroups.list(),interface_summary:{timezone:settings.timezone,server_count:included.length,today:{...today,total:today.rx+today.tx},stale_count:included.filter(n=>!n.history_seen||now()-n.history_seen>900||n.history_error||n.history_timezone!==settings.timezone).length},events:forwardAlerts.history(),batch:forwardBatch.view(),gost_version:gostVersion,summary:forwarding.summary()});}
         if(path==='/api/forwarding'&&method==='POST')return send(res,201,forwarding.add(await body(req)));
         const forwardingEdit=/^\/api\/forwarding\/([a-f0-9-]{36})$/.exec(path);if(forwardingEdit&&method==='PUT')return send(res,202,forwarding.update(forwardingEdit[1],await body(req)));
         const forwardingAction=/^\/api\/forwarding\/([a-f0-9-]{36})\/(start|resume|stop|status|remove)$/.exec(path);
@@ -452,7 +459,7 @@ export async function createApp(options = {}) {
         const sshRoute=/^\/api\/nodes\/([a-f0-9-]{36})\/ssh\/(probe|trust|test|deploy)$/.exec(path);
         if(sshRoute&&method==='POST'){const [unused,id,action]=sshRoute;if(action==='probe')return send(res,200,await ssh.probe(id));if(action==='trust'){const input=await body(req);ssh.trust(id,input.fingerprint);return send(res,200,{ok:true});}if(action==='test')return send(res,200,await ssh.test(id));return send(res,202,ssh.deploy(id));}
         const jobRoute=/^\/api\/ssh\/jobs\/([a-f0-9-]{36})$/.exec(path);if(jobRoute&&method==='GET')return send(res,200,ssh.status(jobRoute[1]));
-        if(path==='/api/nodes'&&method==='GET') {const rates=fx.read();const {rates:unused,...fxInfo}=rates;return send(res,200,{nodes:snapshot(),settings:safeSettings(),cost_summary:costSummary(getNodes(),rates),fx_info:fxInfo,server_time:now(),version:'0.2.43',agent_version:'0.2.5'});}
+        if(path==='/api/nodes'&&method==='GET') {const rates=fx.read();const {rates:unused,...fxInfo}=rates;return send(res,200,{nodes:snapshot(),settings:safeSettings(),cost_summary:costSummary(getNodes(),rates),fx_info:fxInfo,server_time:now(),version:'0.2.44',agent_version:'0.2.5'});}
         const adminNetwork=/^\/api\/nodes\/([a-f0-9-]{36})\/network-history$/.exec(path);if(adminNetwork&&method==='GET')return send(res,200,publicHistory(adminNetwork[1],true));
         if(path==='/api/network/history'&&method==='GET')return send(res,200,publicHistory('network',true));
         if(path==='/api/costs'&&method==='GET')return send(res,200,{...costSummary(getNodes(),fx.read()),fx:fx.read()});
@@ -528,6 +535,6 @@ export async function createApp(options = {}) {
 function formatBytes(bytes) {const units=['B','KiB','MiB','GiB','TiB'];let i=0;while(bytes>=1024&&i<4){bytes/=1024;i++;}return bytes.toFixed(1)+' '+units[i];}
 if(process.argv[1] && import.meta.url===pathToFileURL(resolve(process.argv[1])).href) {
   const app=await createApp();
-  app.server.listen(Number(process.env.PORT ?? 8080),process.env.HOST ?? '127.0.0.1',()=>console.log(`Firefly Probe 0.2.43 listening on ${process.env.HOST ?? '127.0.0.1'}:${process.env.PORT ?? 8080}`));
+  app.server.listen(Number(process.env.PORT ?? 8080),process.env.HOST ?? '127.0.0.1',()=>console.log(`Firefly Probe 0.2.44 listening on ${process.env.HOST ?? '127.0.0.1'}:${process.env.PORT ?? 8080}`));
   let stopping=false;for(const sig of ['SIGINT','SIGTERM']) process.on(sig,async()=>{if(stopping)return;stopping=true;await app.close();process.exit(0);});
 }
