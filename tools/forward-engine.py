@@ -239,6 +239,8 @@ def migrate(payload):
     saved = {'rules': rules, 'samples': {}, 'manifests': {r['id']: read(MANIFESTS/(r['id']+'.json')) for r in rules if (MANIFESTS/(r['id']+'.json')).exists()}}
     for r in rules:
         active = manager('status', 'firefly-forward-'+r['id'])
+        if r['state']=='error':
+            r['state'] = 'running' if active else 'stopped'
         if active != (r['state']=='running'):
             raise RuntimeError('规则实际启停与面板不一致，请先检查状态')
         if active:
@@ -336,6 +338,11 @@ def apply(payload):
         persist(state)
         if action in ('remove', 'edit'):
             (MANIFESTS/(ident+'.json')).unlink(missing_ok=True)
+        if action=='remove' and not state['rules']:
+            manager('stop')
+            (ROOT/'state.json').unlink(missing_ok=True)
+            (ROOT/'config.json').unlink(missing_ok=True)
+            print('FIREFLY_ENGINE_EMPTY')
         print('FIREFLY_FORWARD_REMOVED' if action=='remove' else 'FIREFLY_FORWARD_STOPPED' if action=='stop' else 'FIREFLY_FORWARD_ACTIVE')
     except Exception:
         for r in state['rules'].values():
@@ -401,6 +408,21 @@ def rollback(payload):
         raise
 
 
+def execute(payload):
+    if payload['action']=='migrate':
+        migrate(payload)
+        print('FIREFLY_ENGINE_SHARED')
+    elif payload['action']=='rollback':
+        rollback(payload)
+        print('FIREFLY_ENGINE_LEGACY')
+    else:
+        if payload.get('ensure_shared'):
+            print('正在准备统一转发服务；旧实例将自动合并，已有连接可能短暂中断。', flush=True)
+            migrate(payload)
+            print('FIREFLY_ENGINE_SHARED', flush=True)
+        apply(payload)
+
+
 def main(payload):
     validate(payload)
     ROOT.mkdir(mode=0o700, parents=True, exist_ok=True)
@@ -408,14 +430,7 @@ def main(payload):
     import fcntl
     with open(ROOT/'lock', 'w') as lock:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        if payload['action']=='migrate':
-            migrate(payload)
-            print('FIREFLY_ENGINE_SHARED')
-        elif payload['action']=='rollback':
-            rollback(payload)
-            print('FIREFLY_ENGINE_LEGACY')
-        else:
-            apply(payload)
+        execute(payload)
 
 
 if __name__=='__main__':

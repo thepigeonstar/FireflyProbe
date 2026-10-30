@@ -113,5 +113,36 @@ class EngineTest(unittest.TestCase):
         engine.apply(self.payload('status',id=self.rules[0]['id']))
         self.assertNotIn(('start',engine.UNIT),self.calls)
 
+    def test_automatic_migration_then_action_and_reuse(self):
+        a,b=self.rules[:2]
+        engine.execute(self.payload('stop',id=a['id'],ensure_shared=True))
+        state=engine.read(engine.ROOT/'state.json')
+        self.assertFalse(state['rules'][a['id']]['active'])
+        before=(engine.MANIFESTS/(b['id']+'.json')).read_bytes()
+        self.calls.clear()
+        engine.execute(self.payload('resume',id=a['id']))
+        self.assertEqual((engine.MANIFESTS/(b['id']+'.json')).read_bytes(),before)
+        self.assertNotIn(('start',engine.UNIT),self.calls)
+        self.assertIn('FIREFLY_ENGINE_SHARED',self.output.getvalue())
+
+    def test_automatic_migration_failure_does_not_run_requested_action(self):
+        self.fail_port=self.rules[1]['listen_port']
+        with patch.object(engine,'apply') as apply:
+            with self.assertRaises(Exception):engine.execute(self.payload('stop',id=self.rules[0]['id'],ensure_shared=True))
+            apply.assert_not_called()
+        self.assertTrue(self.running['firefly-forward-'+self.rules[0]['id']])
+
+    def test_fresh_install_last_remove_and_new_owner(self):
+        for path in engine.MANIFESTS.glob('*.json'):path.unlink()
+        rule={**self.rules[0],'installed':False,'state':'not_deployed'}
+        payload=dict(owner=self.owner,action='start',id=rule['id'],rules=[rule],ensure_shared=True)
+        engine.execute(payload)
+        self.assertTrue(self.running[engine.UNIT])
+        engine.execute(dict(payload,action='remove',ensure_shared=False))
+        self.assertFalse(self.running[engine.UNIT]);self.assertFalse((engine.ROOT/'state.json').exists())
+        self.assertFalse(list(engine.MANIFESTS.glob('*.json')))
+        engine.execute(dict(payload,owner=str(uuid.uuid4())))
+        self.assertTrue(self.running[engine.UNIT])
+
 
 if __name__=='__main__':unittest.main()

@@ -1,0 +1,13 @@
+import test from 'node:test';import assert from 'node:assert/strict';import {openStore} from '../server/store.mjs';import {createForwarding} from '../server/forwarding.mjs';import {mkdtempSync,rmSync} from 'node:fs';import {join} from 'node:path';import {tmpdir} from 'node:os';import {randomUUID} from 'node:crypto';
+test('统一共享入口：旧机器自动迁移、新增复用、失败不降级、最终删除释放节点、任务轮询补完成',()=>{
+ const dir=mkdtempSync(join(tmpdir(),'unified-')),db=openStore(join(dir,'db.sqlite')),node=randomUUID(),id=randomUUID(),jobs=new Map();let callback,lastPayload;
+ const ssh={busy:()=>[...jobs.values()].some(j=>j.status==='running'),status:id=>{if(!jobs.has(id))throw Error();return jobs.get(id);},runManaged(node,script,cb){lastPayload=JSON.parse(Buffer.from(/json.loads\(base64.b64decode\('([^']+)'\)\)/.exec(script)[1],'base64').toString());callback=cb;const j={id:randomUUID(),status:'running',log:''};jobs.set(j.id,j);return j;}};
+ const f=createForwarding(db,ssh),finish=(log,status='success',notify=true)=>{const j=[...jobs.values()].at(-1);Object.assign(j,{log,status});if(notify)callback(j);};
+ try{
+ db.prepare('INSERT INTO nodes(id,name,token_hash,created,last_version,ssh_host,ssh_password,ssh_fingerprint) VALUES(?,?,?,?,?,?,?,?)').run(node,'old','hash',1,'0.2.4','192.0.2.1','sealed','trusted');db.prepare('INSERT INTO settings VALUES(?,?)').run('forwarding:'+id,JSON.stringify({id,node_id:node,name:'A',protocol:'tcp',listen_port:10161,target_host:'192.0.2.2',target_port:8443,installed:true,state:'running'}));
+ assert.throws(()=>f.action(id,'start'),/0.2.5/);assert.equal(jobs.size,0);db.prepare('UPDATE nodes SET last_version=?').run('0.2.5');f.action(id,'start');assert.equal(lastPayload.ensure_shared,true);assert.equal(lastPayload.rules.length,1);finish('迁移失败，旧服务已恢复','failed');assert.equal(f.list()[0].state,'running');assert.equal(f.engineInfo(node).mode,'legacy');
+ f.action(id,'start');finish('FIREFLY_ENGINE_SHARED\nFIREFLY_FORWARD_ACTIVE','success',false);assert.equal(f.list()[0].state,'running');assert.equal(f.engineInfo(node).mode,'shared');
+ const other=f.add({node_id:node,protocol:'udp',listen_port:10162,target_host:'192.0.2.2',target_port:8443});f.action(other.id,'start');assert.equal(lastPayload.ensure_shared,undefined);assert.equal(lastPayload.action,'start');finish('FIREFLY_FORWARD_ACTIVE');assert.equal(f.list().length,2);
+ f.action(id,'start');finish('单条失败，已恢复','failed');assert.equal(f.engineInfo(node).mode,'shared');f.action(id,'remove');finish('FIREFLY_FORWARD_REMOVED');assert.equal(f.list().length,1);f.action(other.id,'remove');finish('FIREFLY_ENGINE_EMPTY\nFIREFLY_FORWARD_REMOVED');assert.equal(f.hasNode(node),false);assert.equal(f.engineInfo(node).mode,'legacy');
+ }finally{db.close();rmSync(dir,{recursive:true,force:true});}
+});

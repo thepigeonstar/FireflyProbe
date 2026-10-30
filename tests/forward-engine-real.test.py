@@ -91,7 +91,7 @@ with tempfile.TemporaryDirectory() as directory:
             for r in rules:
                 manager('start','firefly-forward-'+r['id'])
                 if r['state']=='stopped':manager('stop','firefly-forward-'+r['id'])
-            probe(rules[0]);probe(rules[1]);engine.migrate(payload('migrate'))
+            probe(rules[0]);probe(rules[1]);engine.execute(payload('resume',id=rules[0]['id'],ensure_shared=True))
             assert sum(p.poll() is None for p in processes.values())==1
             state=engine.read(engine.ROOT/'state.json');pid=processes[engine.UNIT].pid
             probe(rules[0],100);probe(rules[1],1000)
@@ -118,6 +118,11 @@ with tempfile.TemporaryDirectory() as directory:
                 return real_run(command,**kwargs)
             with patch.object(engine.subprocess,'run',side_effect=legacy_run):engine.rollback(payload('rollback',legacy=[dict(id=r['id'],script='restore:'+r['id']) for r in by_id.values()]))
             assert not manager('status');assert engine.read(engine.ROOT/'state.json')['mode']=='legacy';probe(replacement);probe(rules[1]);assert sum(p.poll() is None for p in processes.values())==2
+            engine.execute(payload('resume',id=replacement['id'],ensure_shared=True))
+            assert sum(p.poll() is None for p in processes.values())==1
+            for rule in list(by_id.values()):engine.execute(payload('remove',id=rule['id']))
+            assert sum(p.poll() is None for p in processes.values())==0
+            assert not (engine.ROOT/'state.json').exists()
             print('Real GOST shared engine: migration, one process, TCP/UDP, service counters, stop/resume/edit isolation, occupied-port rollback and legacy return passed.')
     except Exception:
         for log in logs:

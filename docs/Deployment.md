@@ -340,3 +340,7 @@ Alpine 使用 rc-service firefly-probe-agent status，以及 tail -n 50 /var/log
 Debian / Ubuntu 检查：systemctl status firefly-forward-engine --no-pager。Alpine 检查：rc-service firefly-forward-engine status。可比较切换前后同等负载下的进程数与内存；RSS 合计不等于独占内存。
 
 端口管理方式不变：例如 10161 → 落地A:8443、10162 → 落地B:443，各端口规则仍分别配置协议、目标、启停及流量统计；合并的是承载这些规则的进程，不合并规则或目标。
+
+## v0.2.45 转发部署变化
+
+先升级采集端至 0.2.5 或以上。更新主控后无须手动切换引擎，转发操作统一走共享服务；旧独立实例首次操作自动迁移，同机连接会短暂中断。主控更新本身不自动重启全部转发。按服务器执行一次安装 / 更新即可逐台完成迁移，批量更新会启动原已停止的规则。详见 Forwarding.md 当前部署方式；早期手动切换说明已被替代。
