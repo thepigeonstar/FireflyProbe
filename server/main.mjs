@@ -459,7 +459,7 @@ export async function createApp(options = {}) {
         const sshRoute=/^\/api\/nodes\/([a-f0-9-]{36})\/ssh\/(probe|trust|test|deploy)$/.exec(path);
         if(sshRoute&&method==='POST'){const [unused,id,action]=sshRoute;if(action==='probe')return send(res,200,await ssh.probe(id));if(action==='trust'){const input=await body(req);ssh.trust(id,input.fingerprint);return send(res,200,{ok:true});}if(action==='test')return send(res,200,await ssh.test(id));return send(res,202,ssh.deploy(id));}
         const jobRoute=/^\/api\/ssh\/jobs\/([a-f0-9-]{36})$/.exec(path);if(jobRoute&&method==='GET')return send(res,200,ssh.status(jobRoute[1]));
-        if(path==='/api/nodes'&&method==='GET') {const rates=fx.read();const {rates:unused,...fxInfo}=rates;return send(res,200,{nodes:snapshot(),settings:safeSettings(),cost_summary:costSummary(getNodes(),rates),fx_info:fxInfo,server_time:now(),version:'0.2.47',agent_version:'0.2.5'});}
+        if(path==='/api/nodes'&&method==='GET') {const rates=fx.read();const {rates:unused,...fxInfo}=rates;return send(res,200,{nodes:snapshot(),settings:safeSettings(),cost_summary:costSummary(getNodes(),rates),fx_info:fxInfo,server_time:now(),version:'0.2.48',agent_version:'0.2.5'});}
         const adminNetwork=/^\/api\/nodes\/([a-f0-9-]{36})\/network-history$/.exec(path);if(adminNetwork&&method==='GET')return send(res,200,publicHistory(adminNetwork[1],true));
         if(path==='/api/network/history'&&method==='GET')return send(res,200,publicHistory('network',true));
         if(path==='/api/costs'&&method==='GET')return send(res,200,{...costSummary(getNodes(),fx.read()),fx:fx.read()});
@@ -492,10 +492,10 @@ export async function createApp(options = {}) {
           if(!match[2]&&method==='PUT') {
             if(ssh.busy(node.id))fail(409,'部署中不能修改服务器配置');const input=await body(req);if(ssh.busy(node.id))fail(409,'部署中不能修改服务器配置');
             if(input.ssh_keep_forwarding!==undefined&&typeof input.ssh_keep_forwarding!=='boolean')fail(400,'同机换址选项格式无效');
-            const fields=sshFields(input,node),move=input.ssh_keep_forwarding===true&&(fields.ssh_host!==node.ssh_host||fields.ssh_port!==node.ssh_port||fields.ssh_user!==node.ssh_user);
+            const fields=sshFields(input,node),move=input.ssh_keep_forwarding===true&&(fields.ssh_host!==node.ssh_host||fields.ssh_port!==node.ssh_port||fields.ssh_user!==node.ssh_user||Boolean(input.ssh_move_proof));
             const n=configuredNode(input,node,node.id,move),epoch=restoreEpoch;
             if(n.interface!==node.interface && db.prepare('SELECT 1 FROM daily WHERE node_id=? LIMIT 1').get(node.id)) fail(409,'已有流量历史后不能更换统计网卡；请新建节点，避免重复计费');
-            if(move){await ssh.verifyMove(node.id,input);const current=getNodes().find(x=>x.id===node.id);if(epoch!==restoreEpoch||!current||ssh.busy(node.id)||Object.keys(n).concat(['ssh_password','ssh_fingerprint','token_hash']).some(k=>current[k]!==node[k]))fail(409,'核验期间服务器配置已变化，请刷新后重试');}
+            if(move){const verified=await ssh.verifyMove(node.id,input,session.cookie);n.ssh_fingerprint=verified.fingerprint;const current=getNodes().find(x=>x.id===node.id);if(epoch!==restoreEpoch||!current||ssh.busy(node.id)||Object.keys(n).concat(['ssh_password','ssh_fingerprint','token_hash']).some(k=>current[k]!==node[k]))fail(409,'核验期间服务器配置已变化，请刷新后重试');}
             writeNode(node.id,n);
             return send(res,200,{ok:true,...(move?{message:'同机换址已验证，转发规则和历史均已保留；无需重新部署'}:{})});
           }
@@ -539,6 +539,6 @@ export async function createApp(options = {}) {
 function formatBytes(bytes) {const units=['B','KiB','MiB','GiB','TiB'];let i=0;while(bytes>=1024&&i<4){bytes/=1024;i++;}return bytes.toFixed(1)+' '+units[i];}
 if(process.argv[1] && import.meta.url===pathToFileURL(resolve(process.argv[1])).href) {
   const app=await createApp();
-  app.server.listen(Number(process.env.PORT ?? 8080),process.env.HOST ?? '127.0.0.1',()=>console.log(`Firefly Probe 0.2.47 listening on ${process.env.HOST ?? '127.0.0.1'}:${process.env.PORT ?? 8080}`));
+  app.server.listen(Number(process.env.PORT ?? 8080),process.env.HOST ?? '127.0.0.1',()=>console.log(`Firefly Probe 0.2.48 listening on ${process.env.HOST ?? '127.0.0.1'}:${process.env.PORT ?? 8080}`));
   let stopping=false;for(const sig of ['SIGINT','SIGTERM']) process.on(sig,async()=>{if(stopping)return;stopping=true;await app.close();process.exit(0);});
 }

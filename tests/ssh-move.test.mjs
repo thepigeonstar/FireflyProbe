@@ -2,7 +2,7 @@ import test from 'node:test';import assert from 'node:assert/strict';import {mkd
 const {Server,utils}=ssh2;
 test('同机换址真实 SSH：指纹固定、身份核验、历史保留、失败不改配置及任务互斥',async t=>{
  const dir=mkdtempSync(join(tmpdir(),'ssh-move-')),key=utils.generateKeyPairSync('ed25519').private,password='move-private-fixture';let owner=true,script='',pause=null,signal=null;
- const makeServer=hostKey=>new Server({hostKeys:[hostKey]},client=>{client.on('error',()=>{});client.on('authentication',ctx=>ctx.method==='password'&&ctx.password===password?ctx.accept():ctx.reject());client.on('ready',()=>client.on('session',accept=>{const session=accept();session.on('exec',(accept,unused,info)=>{assert.equal(info.command,'sh -s');const stream=accept();let text='';stream.on('data',chunk=>text+=chunk);stream.on('end',async()=>{script=text;signal?.();if(pause)await pause;stream.write(owner?'FIREFLY_SAME_MACHINE\n':'wrong owner\n');stream.exit(owner?0:3);stream.end();});});}));});
+ const makeServer=hostKey=>new Server({hostKeys:[hostKey]},client=>{client.on('error',()=>{});client.on('authentication',ctx=>ctx.method==='password'&&ctx.password===password?ctx.accept():ctx.reject());client.on('ready',()=>client.on('session',accept=>{const session=accept();session.on('exec',(accept,unused,info)=>{const stream=accept();if(info.command==='id -u'){stream.write('0\n');stream.exit(0);stream.end();return;}assert.equal(info.command,'sh -s');let text='';stream.on('data',chunk=>text+=chunk);stream.on('end',async()=>{script=text;signal?.();if(pause)await pause;stream.write(owner?'FIREFLY_SAME_MACHINE\n':'wrong owner\n');stream.exit(owner?0:3);stream.end();});});}));});
  const server=makeServer(key),other=makeServer(utils.generateKeyPairSync('ed25519').private);await new Promise(r=>server.listen(0,'0.0.0.0',r));await new Promise(r=>other.listen(0,'127.0.0.1',r));
  const app=await createApp({password:'move-admin-fixture',publicURL:'https://probe.example.test',dbPath:join(dir,'db.sqlite'),disableExternal:true,disableTelegram:true});await new Promise(r=>app.server.listen(0,'127.0.0.1',r));const base='http://127.0.0.1:'+app.server.address().port,headers={'Content-Type':'application/json'},call=async(path,method='GET',data)=>{const r=await fetch(base+path,{method,headers,body:data===undefined?undefined:JSON.stringify(data)});return {status:r.status,data:await r.json(),r};};let node;
  try{
@@ -16,7 +16,7 @@ test('同机换址真实 SSH：指纹固定、身份核验、历史保留、失�
  const csrf=headers['X-CSRF-Token'];delete headers['X-CSRF-Token'];assert.equal((await call('/api/nodes/'+node.id,'PUT',{ssh_host:'127.0.0.2',ssh_keep_forwarding:true})).status,403);headers['X-CSRF-Token']=csrf;
  });
  await t.test('不同主机指纹、密码错误或节点身份错误均拒绝并保留原配置',async()=>{
- assert.equal((await call('/api/nodes/'+node.id,'PUT',{ssh_host:'127.0.0.1',ssh_port:other.address().port,ssh_keep_forwarding:true})).status,502);
+ assert.equal((await call('/api/nodes/'+node.id,'PUT',{ssh_host:'127.0.0.1',ssh_port:other.address().port,ssh_keep_forwarding:true})).status,409);
  assert.equal((await call('/api/nodes/'+node.id,'PUT',{ssh_host:'127.0.0.2',ssh_password:'wrong',ssh_keep_forwarding:true})).status,502);
  owner=false;assert.equal((await call('/api/nodes/'+node.id,'PUT',{ssh_host:'127.0.0.2',ssh_keep_forwarding:true})).status,409);owner=true;assert.deepEqual(read(),start);
  });
@@ -32,6 +32,18 @@ test('同机换址真实 SSH：指纹固定、身份核验、历史保留、失�
  const state=join(dir,'state.json'),agent=join(dir,'agent.json'),legacy=join(dir,'legacy.json');let python=/python3 - <<'FIREFLY_VERIFY_MOVE'\n([\s\S]*?)\nFIREFLY_VERIFY_MOVE/.exec(script)[1];for(const [remote,local] of [['/etc/firefly-forward-engine/state.json',state],['/etc/firefly-probe-agent.json',agent],['/etc/lightprobe-agent.json',legacy]])python=python.replaceAll("'"+remote+"'",JSON.stringify(local.replaceAll('\\','/')));
  const run=()=>spawnSync(process.platform==='win32'?'../../work/python-diagnostic/runtime/python.exe':'python3',['-'],{input:python,encoding:'utf8',cwd:new URL('..',import.meta.url)});
  writeFileSync(state,JSON.stringify({owner:node.id}));assert.equal(run().status,0);writeFileSync(agent,JSON.stringify({token:node.token}));writeFileSync(state,JSON.stringify({owner:randomUUID()}));assert.equal(run().status,3);unlinkSync(state);const success=run();assert.equal(success.status,0);assert.equal(success.stdout.trim(),'FIREFLY_SAME_MACHINE');writeFileSync(agent,JSON.stringify({token:'wrong'}));assert.equal(run().status,3);
+ const encoded=/expected=json.loads\(base64.b64decode\('([^']+)'\)\)/.exec(python)[1],strict={...JSON.parse(Buffer.from(encoded,'base64')),require_token:true};python=python.replace(encoded,Buffer.from(JSON.stringify(strict)).toString('base64'));writeFileSync(state,JSON.stringify({owner:node.id}));assert.equal(run().status,3);writeFileSync(agent,JSON.stringify({token:node.token}));assert.equal(run().status,0);
+ });
+ await t.test('确认新指纹后测试原节点身份，证明绑定会话/地址/凭据且一次有效',async()=>{
+ const input={id:node.id,ssh_host:'127.0.0.1',ssh_port:other.address().port,ssh_user:'root',ssh_password:'',ssh_keep_forwarding:true};
+ const check=async()=>{const p=await call('/api/ssh/draft/probe','POST',input);assert.equal(p.status,200);assert.equal(p.data.trusted,false);return call('/api/ssh/draft/test','POST',{challenge:p.data.challenge,fingerprint:p.data.fingerprint});};
+ const oldFingerprint=read().ssh_fingerprint;owner=false;assert.equal((await check()).status,409);owner=true;
+ const checked=await check();assert.equal(checked.status,200);assert.ok(checked.data.move_proof);assert.equal(read().ssh_fingerprint,oldFingerprint);assert.ok(script.includes("expected.get('require_token')"));
+ const data={...input,ssh_move_proof:checked.data.move_proof};delete data.id;
+ const original={...headers},login=await call('/admin/api/login','POST',{username:'admin',password:'move-admin-fixture'});headers.Cookie=login.r.headers.get('set-cookie').split(';')[0];headers['X-CSRF-Token']=login.data.csrf;assert.equal((await call('/api/nodes/'+node.id,'PUT',data)).status,409);Object.assign(headers,original);
+ assert.equal((await call('/api/nodes/'+node.id,'PUT',{...data,ssh_port:server.address().port})).status,409);assert.equal((await call('/api/nodes/'+node.id,'PUT',{...data,ssh_password:'wrong'})).status,409);
+ const result=await call('/api/nodes/'+node.id,'PUT',data);assert.equal(result.status,200,JSON.stringify(result.data));assert.notEqual(read().ssh_fingerprint,oldFingerprint);assert.equal(read().ssh_host,'127.0.0.1');assert.equal((await call('/api/nodes/'+node.id,'PUT',data)).status,409);assert.equal(app.db.prepare('SELECT value FROM settings WHERE key=?').get('forwarding:'+rule.id).value,ruleJSON);
+ const fresh=await call('/api/ssh/draft/probe','POST',input),freshTest=await call('/api/ssh/draft/test','POST',{challenge:fresh.data.challenge,fingerprint:fresh.data.fingerprint}),clock=Date.now;try{Date.now=()=>clock()+121000;assert.equal((await call('/api/nodes/'+node.id,'PUT',{...data,ssh_move_proof:freshTest.data.move_proof})).status,409);}finally{Date.now=clock;}
  });
  }finally{await app.close();await new Promise(r=>server.close(r));await new Promise(r=>other.close(r));rmSync(dir,{recursive:true,force:true});}
 });
