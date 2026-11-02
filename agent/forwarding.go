@@ -8,6 +8,7 @@ import (
 	"errors"
 	"io"
 	"math"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -43,12 +44,155 @@ type forwardItem struct {
 	manifest forwardManifest
 }
 
+// Only the reporting loop accesses this state; the worker returns through a
+// bounded channel. Slow Metrics collection must not delay basic host reports.
+type forwardPoller struct {
+	result  chan []ForwardSample
+	collect func(context.Context) []ForwardSample
+	started time.Time
+	running bool
+	cached  []ForwardSample
+}
+
+func newForwardPoller(collect func(context.Context) []ForwardSample) *forwardPoller {
+	return &forwardPoller{result: make(chan []ForwardSample, 1), collect: collect}
+}
+
+func (p *forwardPoller) latest(ctx context.Context) []ForwardSample {
+	select {
+	case p.cached = <-p.result:
+		p.running = false
+	default:
+	}
+	if ctx.Err() == nil && !p.running && (p.started.IsZero() || time.Since(p.started) >= 30*time.Second) {
+		p.running = true
+		p.started = time.Now()
+		go func() {
+			samples := p.collect(ctx)
+			select {
+			case p.result <- samples:
+			case <-ctx.Done():
+			}
+		}()
+	}
+	return p.cached
+}
+
 var forwardID = regexp.MustCompile(`^[a-f0-9-]{36}$`)
-var forwardMetricLine = regexp.MustCompile(`^(gost_services|gost_service_transfer_input_bytes_total|gost_service_transfer_output_bytes_total|gost_service_handler_errors_total)(?:\{.*\})?[ \t]+(\S+)(?:[ \t]+[+-]?\d+)?$`)
-var forwardServiceLabel = regexp.MustCompile(`(?:\{|,)\s*service="((?:\\.|[^"\\])*)"(?:,|\})`)
 var forwardServiceName = regexp.MustCompile(`^ff-[a-f0-9-]{36}-[a-f0-9-]{36}-(tcp|udp)$`)
 
-const forwardMetricsLimit = 16 * 1024 * 1024
+const forwardMetricsLimit = 64 * 1024 * 1024
+
+// Parse the metric envelope without running a whole-line regular expression on
+// every client series. Label values may contain spaces and escaped quotes.
+func forwardMetricParts(line string) (name, labels, value string, tracked, valid bool) {
+	i := strings.IndexAny(line, "{ \t")
+	if i < 0 {
+		i = len(line)
+	}
+	name = line[:i]
+	switch name {
+	case "gost_services", "gost_service_transfer_input_bytes_total", "gost_service_transfer_output_bytes_total", "gost_service_handler_errors_total":
+	default:
+		return "", "", "", false, true
+	}
+	rest := line[i:]
+	if strings.HasPrefix(rest, "{") {
+		end := strings.LastIndexByte(rest, '}')
+		if end < 0 {
+			return name, "", "", true, false
+		}
+		labels, rest = rest[:end+1], rest[end+1:]
+	}
+	if len(rest) == 0 || rest[0] != ' ' && rest[0] != '\t' {
+		return name, labels, "", true, false
+	}
+	tail := strings.TrimSpace(rest)
+	if tail == "" {
+		return name, labels, "", true, false
+	}
+	value = tail
+	if end := strings.IndexAny(tail, " \t"); end >= 0 {
+		value = tail[:end]
+		field := strings.TrimSpace(tail[end:])
+		stamp := strings.TrimLeft(field, "+-")
+		if stamp == "" || len(field)-len(stamp) > 1 {
+			return name, labels, "", true, false
+		}
+		for _, c := range stamp {
+			if c < '0' || c > '9' {
+				return name, labels, "", true, false
+			}
+		}
+	}
+	return name, labels, value, true, true
+}
+
+func forwardServiceValue(labels string) string {
+	// Walk quoted fields so text inside another label cannot become a service.
+	for i := 1; i < len(labels)-1; {
+		for i < len(labels)-1 && (labels[i] == ' ' || labels[i] == '\t' || labels[i] == ',') {
+			i++
+		}
+		keyStart := i
+		for i < len(labels)-1 && labels[i] != '=' {
+			i++
+		}
+		if i >= len(labels)-1 {
+			return ""
+		}
+		key := strings.TrimSpace(labels[keyStart:i])
+		i++
+		if i >= len(labels)-1 || labels[i] != '"' {
+			return ""
+		}
+		i++
+		start := i
+		for i < len(labels)-1 {
+			if labels[i] == '\\' {
+				i += 2
+				continue
+			}
+			if labels[i] == '"' {
+				break
+			}
+			i++
+		}
+		if i >= len(labels)-1 {
+			return ""
+		}
+		raw := labels[start:i]
+		i++
+		if key == "service" {
+			if strings.Contains(raw, "\\") {
+				decoded, err := strconv.Unquote("\"" + raw + "\"")
+				if err != nil {
+					return ""
+				}
+				return decoded
+			}
+			return raw
+		}
+		if i < len(labels)-1 && labels[i] != ',' && labels[i] != ' ' && labels[i] != '\t' {
+			return ""
+		}
+	}
+	return ""
+}
+
+func forwardReadError(err error) string {
+	if errors.Is(err, bufio.ErrTooLong) {
+		return "metrics_line_too_long"
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return "metrics_timeout"
+	}
+	var networkError net.Error
+	if errors.As(err, &networkError) && networkError.Timeout() {
+		return "metrics_timeout"
+	}
+	return "metrics_read_failed"
+}
 
 // Stream the response: client labels can grow well beyond 256 KiB. Never
 // accept a partial response as a smaller counter or hold it all in memory.
@@ -60,20 +204,18 @@ func readForwardMetrics(reader io.Reader, split ...map[string]*forwardCount) (ui
 	marker := false
 	for scanner.Scan() {
 		line := scanner.Text()
-		match := forwardMetricLine.FindStringSubmatch(line)
-		if match == nil {
-			for _, name := range []string{"gost_services", "gost_service_transfer_input_bytes_total", "gost_service_transfer_output_bytes_total", "gost_service_handler_errors_total"} {
-				if line == name || strings.HasPrefix(line, name+"{") || strings.HasPrefix(line, name+" ") || strings.HasPrefix(line, name+"\t") {
-					return 0, 0, 0, errors.New("metrics_invalid")
-				}
-			}
+		name, labels, raw, tracked, valid := forwardMetricParts(line)
+		if !tracked {
 			continue
 		}
-		value, err := strconv.ParseFloat(match[2], 64)
+		if !valid {
+			return 0, 0, 0, errors.New("metrics_invalid")
+		}
+		value, err := strconv.ParseFloat(raw, 64)
 		if err != nil || value < 0 || math.IsNaN(value) || math.IsInf(value, 0) || value > 8e15 {
 			return 0, 0, 0, errors.New("metrics_invalid")
 		}
-		switch match[1] {
+		switch name {
 		case "gost_services":
 			marker = true
 		case "gost_service_transfer_input_bytes_total":
@@ -84,18 +226,15 @@ func readForwardMetrics(reader io.Reader, split ...map[string]*forwardCount) (ui
 			failures += value
 		}
 		if len(split) > 0 {
-			label := forwardServiceLabel.FindStringSubmatch(line)
-			if len(label) == 2 {
-				name, err := strconv.Unquote(`"` + label[1] + `"`)
-				if counter := split[0][name]; err == nil && counter != nil {
-					switch match[1] {
-					case "gost_service_transfer_input_bytes_total":
-						counter.Rx += value
-					case "gost_service_transfer_output_bytes_total":
-						counter.Tx += value
-					case "gost_service_handler_errors_total":
-						counter.Errors += value
-					}
+			serviceName := forwardServiceValue(labels)
+			if counter := split[0][serviceName]; counter != nil {
+				switch name {
+				case "gost_service_transfer_input_bytes_total":
+					counter.Rx += value
+				case "gost_service_transfer_output_bytes_total":
+					counter.Tx += value
+				case "gost_service_handler_errors_total":
+					counter.Errors += value
 				}
 			}
 		}
@@ -104,7 +243,7 @@ func readForwardMetrics(reader io.Reader, split ...map[string]*forwardCount) (ui
 		return 0, 0, 0, errors.New("metrics_too_large")
 	}
 	if scanner.Err() != nil {
-		return 0, 0, 0, errors.New("metrics_read_failed")
+		return 0, 0, 0, errors.New(forwardReadError(scanner.Err()))
 	}
 	if !marker {
 		return 0, 0, 0, errors.New("metrics_marker_missing")
@@ -123,9 +262,9 @@ func collectForwarding(parent context.Context, directory string) []ForwardSample
 	if len(paths) == 0 {
 		return nil
 	}
-	ctx, cancel := context.WithTimeout(parent, 5*time.Second)
+	ctx, cancel := context.WithTimeout(parent, 15*time.Second)
 	defer cancel()
-	client := &http.Client{Timeout: 2 * time.Second, Transport: &http.Transport{Proxy: nil}, CheckRedirect: func(req *http.Request, via []*http.Request) error { return http.ErrUseLastResponse }}
+	client := &http.Client{Timeout: 12 * time.Second, Transport: &http.Transport{Proxy: nil}, CheckRedirect: func(req *http.Request, via []*http.Request) error { return http.ErrUseLastResponse }}
 	defer client.CloseIdleConnections()
 	groups := map[int][]forwardItem{}
 	for _, path := range paths {
@@ -192,6 +331,8 @@ func collectForwarding(parent context.Context, directory string) []ForwardSample
 						sample.Error = "metrics_http_error"
 					}
 					response.Body.Close()
+				} else if forwardReadError(e) == "metrics_timeout" {
+					sample.Error = "metrics_timeout"
 				}
 				for _, item := range group {
 					value := sample

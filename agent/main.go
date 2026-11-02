@@ -23,7 +23,7 @@ import (
 	"time"
 )
 
-const version = "0.2.5"
+const version = "0.2.6"
 
 type Config struct {
 	Server         string `json:"server"`
@@ -373,8 +373,7 @@ func main() {
 	var prevIface string
 	var prevTime time.Time
 	var configAt, historyAt time.Time
-	var forwardingAt time.Time
-	var forwardSamples []ForwardSample
+	forwarding := newForwardPoller(func(ctx context.Context) []ForwardSample { return collectForwarding(ctx, "/etc/firefly-forward") })
 	backoff := time.Duration(0)
 	if e == nil {
 		configAt = time.Now()
@@ -426,11 +425,7 @@ func main() {
 		report := Report{Version: version, Interface: iface}
 		report.Hostname, _ = os.Hostname()
 		report.System = readSystem()
-		if time.Since(forwardingAt) >= 30*time.Second {
-			forwardSamples = collectForwarding(ctx, "/etc/firefly-forward")
-			forwardingAt = time.Now()
-		}
-		report.Forwarding = forwardSamples
+		report.Forwarding = forwarding.latest(ctx)
 		for name := range networks {
 			report.Interfaces = append(report.Interfaces, name)
 		}

@@ -13,6 +13,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 )
 
 func TestForwardMetrics(t *testing.T) {
@@ -137,5 +138,129 @@ func TestSharedCollectorReadsOnceAndSeparatesServices(t *testing.T) {
 	os.WriteFile(filepath.Join(dir, ids[0]+".json"), raw, 0600)
 	if got := collectForwarding(context.Background(), dir); len(got) != 1 || got[0].ID != ids[1] {
 		t.Fatalf("invalid mapping accepted: %+v", got)
+	}
+}
+
+func TestForwardLargeSharedStream(t *testing.T) {
+	id := "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+	service := "ff-" + id + "-cccccccc-dddd-eeee-ffff-aaaaaaaaaaaa-tcp"
+	line := fmt.Sprintf("gost_service_transfer_output_bytes_total{host=\"node\",service=%q,client=\"192.0.2.10\"} 100\n", service)
+	const lines = 100000
+	raw := "gost_services 1\n" + strings.Repeat(line, lines)
+	if len(raw) <= 16*1024*1024 {
+		t.Fatal("fixture must exceed the previous response cap")
+	}
+	counts := map[string]*forwardCount{service: {}}
+	rx, tx, _, err := readForwardMetrics(strings.NewReader(raw), counts)
+	if err != nil || rx != 0 || tx != lines*100 || counts[service].Tx != lines*100 {
+		t.Fatalf("large stream dropped or mixed: %d %d %v %+v", rx, tx, err, counts)
+	}
+	if _, _, _, err = readForwardMetrics(strings.NewReader(raw + "gost_service_transfer_output_bytes_total NaN\n")); err == nil {
+		t.Fatal("accepted partial result before invalid tail")
+	}
+}
+
+func TestForwardSlowBodyAndErrorReasons(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(200)
+		w.(http.Flusher).Flush()
+		time.Sleep(2200 * time.Millisecond)
+		fmt.Fprint(w, "gost_services 1\ngost_service_transfer_output_bytes_total 321\n")
+	}))
+	defer server.Close()
+	port, _ := strconv.Atoi(strings.TrimPrefix(server.URL, "http://127.0.0.1:"))
+	dir := t.TempDir()
+	raw, _ := json.Marshal(forwardManifest{ID: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee", Epoch: "bbbbbbbb-cccc-dddd-eeee-ffffffffffff", Port: port})
+	os.WriteFile(filepath.Join(dir, "rule.json"), raw, 0600)
+	got := collectForwarding(context.Background(), dir)
+	if len(got) != 1 || !got[0].Available || got[0].Tx != 321 {
+		t.Fatalf("response slower than old two-second deadline lost: %+v", got)
+	}
+	_, _, _, err := readForwardMetrics(strings.NewReader("gost_services 1\n" + strings.Repeat("x", 65536)))
+	if err == nil || err.Error() != "metrics_line_too_long" {
+		t.Fatalf("line error: %v", err)
+	}
+	_, _, _, err = readForwardMetrics(&brokenMetricsReader{})
+	if err == nil || err.Error() != "metrics_read_failed" {
+		t.Fatalf("truncated error: %v", err)
+	}
+	if forwardReadError(context.DeadlineExceeded) != "metrics_timeout" {
+		t.Fatal("timeout not identified")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	got = collectForwarding(ctx, dir)
+	if len(got) != 1 || got[0].Available || got[0].Error != "metrics_timeout" {
+		t.Fatalf("deadline produced partial success: %+v", got)
+	}
+}
+
+func TestForwardServiceLabelBoundaries(t *testing.T) {
+	for _, row := range []struct{ raw, want string }{
+		{`{client="text,service=\"wrong\"", service="correct",host="x"}`, "correct"},
+		{`{service="escaped\"name",host="x"}`, `escaped"name`},
+		{`{client="only"}`, ""},
+	} {
+		if got := forwardServiceValue(row.raw); got != row.want {
+			t.Fatalf("%s => %q", row.raw, got)
+		}
+	}
+	for _, row := range []string{"gost_services 1 3 4", "gost_services 1 ++3", "gost_services 1 -+3", "gost_services 1 bad"} {
+		if _, _, _, err := readForwardMetrics(strings.NewReader(row)); err == nil {
+			t.Fatalf("invalid suffix accepted: %q", row)
+		}
+	}
+}
+
+func TestForwardPollerDoesNotBlockOrOverlap(t *testing.T) {
+	started, release := make(chan struct{}, 2), make(chan struct{})
+	p := newForwardPoller(func(ctx context.Context) []ForwardSample {
+		started <- struct{}{}
+		select {
+		case <-release:
+		case <-ctx.Done():
+		}
+		return []ForwardSample{{ID: "fixture", Available: true, Tx: 123}}
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	if p.latest(ctx) != nil {
+		t.Fatal("first sample should wait asynchronously")
+	}
+	<-started
+	for i := 0; i < 20; i++ {
+		p.latest(ctx)
+	}
+	select {
+	case <-started:
+		t.Fatal("overlapping collection")
+	default:
+	}
+	close(release)
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		if samples := p.latest(ctx); len(samples) == 1 {
+			if samples[0].Tx != 123 {
+				t.Fatal(samples)
+			}
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatal("completed sample not published")
+}
+
+func BenchmarkForwardLargeSharedStream(b *testing.B) {
+	service := "ff-aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee-cccccccc-dddd-eeee-ffff-aaaaaaaaaaaa-tcp"
+	line := fmt.Sprintf("gost_service_transfer_output_bytes_total{service=%q,client=\"192.0.2.1\"} 100\n", service)
+	raw := "gost_services 1\n" + strings.Repeat(line, 90000)
+	b.SetBytes(int64(len(raw)))
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		counts := map[string]*forwardCount{service: {}}
+		if _, _, _, err := readForwardMetrics(strings.NewReader(raw), counts); err != nil {
+			b.Fatal(err)
+		}
 	}
 }
