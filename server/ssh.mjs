@@ -35,7 +35,7 @@ export function sshFields(input,old={}) {
   return {ssh_host:host,ssh_port:port,ssh_user:user};
 }
 export function createSSH({db,vault,publicURL,bootstrap,ClientClass=Client}) {
-  const drafts=new Map(),jobs=new Map(),probes=new Map(),connections=new Set();let stopped=false;
+  const drafts=new Map(),jobs=new Map(),probes=new Map(),connections=new Set(),moving=new Set();let stopped=false;
   const node=id=>{const n=db.prepare('SELECT * FROM nodes WHERE id=?').get(id);if(!n)throw error(404,'服务器不存在');return n;};
   const config=n=>{if(!n.ssh_host)throw error(400,'请先保存服务器 IP 或域名及 SSH 配置');return {host:n.ssh_host,port:n.ssh_port,username:n.ssh_user,readyTimeout:15000,keepaliveInterval:10000,keepaliveCountMax:3};};
   const friendly=e=>/authentication/i.test(e.message)?'SSH 登录失败，请检查用户名、密码和服务器密码登录设置':/host|fingerprint/i.test(e.message)?'SSH 指纹不匹配，请重新测试并核对服务器身份':/timed out|timeout/i.test(e.message)?'SSH 连接或部署超时，请检查网络、防火墙和 SSH 端口':/ECONNREFUSED/.test(e.message)?'SSH 端口拒绝连接':/ENETUNREACH|EHOSTUNREACH/.test(e.message)?'主控无法访问该服务器':'SSH 操作失败，请检查服务器 SSH 服务与网络';
@@ -58,9 +58,22 @@ export function createSSH({db,vault,publicURL,bootstrap,ClientClass=Client}) {
     c.exec(command,(e,stream)=>{if(e)return finish(error(502,'无法执行远程命令'));stream.on('data',consume);stream.stderr.on('data',consume);stream.on('error',()=>finish(error(502,'远程命令中断')));stream.on('close',code=>{if(partial)onLine(partial);finish(null,code);});stream.end(input);});
   });}
   const status=id=>{const job=jobs.get(id);if(!job)throw error(404,'部署任务不存在');return {...job};};
-  const busy=id=>[...jobs.values()].some(j=>j.node_id===id&&j.status==='running');
+  const busy=id=>moving.has(id)||[...jobs.values()].some(j=>j.node_id===id&&j.status==='running');
   return {
     busy,
+    async verifyMove(id,input){
+      const old=node(id);if(busy(id))throw error(409,'该服务器有任务正在执行');
+      if(!old.ssh_fingerprint||!old.ssh_password||input.ssh_clear)throw error(409,'保留转发规则换址需要原 SSH 指纹与密码，不能同时清除密码');
+      const fields=sshFields(input,old);
+      if(input.ssh_password!==undefined&&(typeof input.ssh_password!=='string'||input.ssh_password.length>1024||input.ssh_password.includes('\0')))throw error(400,'SSH 密码格式无效');
+      const next={...old,...fields,ssh_password:input.ssh_password?vault.seal(input.ssh_password,id):old.ssh_password};
+      // Pin the existing host key; an untrusted new host cannot be approved here.
+      const proof=Buffer.from(JSON.stringify({id,hash:old.token_hash})).toString('base64');
+      const script=`set -eu\nexport PYTHONUTF8=1 PYTHONIOENCODING=utf-8\npython3 - <<'FIREFLY_VERIFY_MOVE'\nimport base64, hashlib, json, pathlib\nexpected=json.loads(base64.b64decode('${proof}'))\nmatched=False\nstate=pathlib.Path('/etc/firefly-forward-engine/state.json')\nif state.exists():\n try:\n  matched=json.loads(state.read_text()).get('owner')==expected['id']\n except (OSError,ValueError): pass\nelse:\n for name in ['/etc/firefly-probe-agent.json','/etc/lightprobe-agent.json']:\n  try:\n   token=json.loads(pathlib.Path(name).read_text()).get('token','')\n   if token and hashlib.sha256(token.encode()).hexdigest()==expected['hash']: matched=True\n  except (OSError,ValueError): pass\nif not matched: raise SystemExit(3)\nprint('FIREFLY_SAME_MACHINE')\nFIREFLY_VERIFY_MOVE\n`;
+      moving.add(id);let c;
+      try{c=await connect(next);let confirmed=false;const code=await exec(c,next.ssh_user==='root'?'sh -s':'sudo -n sh -s',script,30000,line=>{if(line.trim()==='FIREFLY_SAME_MACHINE')confirmed=true;});if(code!==0||!confirmed)throw error(409,'新地址未通过原节点身份核验；配置未保存，原规则未改动。请确认是原机器且可读取萤火配置');return {ok:true};}
+      finally{moving.delete(id);c?.end();}
+    },
     runManaged(id,script,onComplete){
       const n=node(id);
       if(!n.ssh_fingerprint||!n.ssh_password)throw error(400,'请先配置 SSH、测试连接并确认指纹');

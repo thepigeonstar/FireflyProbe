@@ -2,7 +2,7 @@
 const managementApi=api;
 api=async function(path,options={}) {
   if(options.body&&/^\/api\/nodes(?:\/[a-f0-9-]{36})?$/.test(path)&&['POST','PUT'].includes(options.method)){
-    const data=JSON.parse(options.body);data.ssh_port=Number(data.ssh_port);data.ssh_clear=$('#node-form').elements.ssh_clear.checked;data.country_override=normalizeCountry($('#node-form').elements.country_override.value);
+    const data=JSON.parse(options.body);data.ssh_port=Number(data.ssh_port);data.ssh_clear=$('#node-form').elements.ssh_clear.checked;data.ssh_keep_forwarding=$('#node-form').elements.ssh_keep_forwarding.checked;data.country_override=normalizeCountry($('#node-form').elements.country_override.value);
     options={...options,body:JSON.stringify(data)};
   }
   return managementApi(path,options);
@@ -18,7 +18,7 @@ page=function(name){
   const expanded=['settings','plugins','guide','notifications','notification-scope'].includes(name);$('#settings-children').hidden=!expanded;$('.settings-nav').setAttribute('aria-expanded',String(expanded));$('.settings-nav').classList.toggle('active',expanded);
 };
 const managementEdit=editNode;
-editNode=function(id){draftSSHRevision++;managementEdit(id);$('#draft-ssh-result').textContent='';$('#node-form').elements.country_override.value=state.nodes.find(n=>n.id===id)?.country_override||'';const form=$('#node-form'),n=state.nodes.find(x=>x.id===id);for(const k of ['ssh_host','ssh_port','ssh_user'])form.elements[k].value=n?.[k]??({ssh_host:'',ssh_port:22,ssh_user:'root'}[k]);form.elements.ssh_password.value='';form.elements.ssh_clear.checked=false;$('#ssh-password-status').textContent=n?.ssh_configured?'已保存密码；留空保留，输入新密码可替换。':'加密保存，页面不会回显。';};
+editNode=function(id){draftSSHRevision++;managementEdit(id);$('#draft-ssh-result').textContent='';$('#node-form').elements.country_override.value=state.nodes.find(n=>n.id===id)?.country_override||'';const form=$('#node-form'),n=state.nodes.find(x=>x.id===id);for(const k of ['ssh_host','ssh_port','ssh_user'])form.elements[k].value=n?.[k]??({ssh_host:'',ssh_port:22,ssh_user:'root'}[k]);form.elements.ssh_password.value='';form.elements.ssh_clear.checked=false;form.elements.ssh_keep_forwarding.checked=false;$('#ssh-keep-forwarding-wrap').hidden=!id||!n?.ssh_configured;$('#ssh-password-status').textContent=n?.ssh_configured?'已保存密码；留空保留，输入新密码可替换。':'加密保存，页面不会回显。';};
 const managementSummary=renderSummary;
 const trafficDirections=t=>`↑ ${b(t.tx)}　↓ ${b(t.rx)}`;
 renderSummary=function(){

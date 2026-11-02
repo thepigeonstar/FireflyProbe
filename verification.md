@@ -349,3 +349,13 @@ Installer locale hotfix: braced variables adjacent to Chinese punctuation in tim
 ## v0.2.46 · 2026-10-30
 
 - 界面文案调整，Chrome 检查导航、面包屑、流量排名返回、设置标题标签与转发页面；不改功能、存储字段或采集端版本。
+
+## 独立 TCP 诊断脚本 · 2026-10-31
+
+- work/test-network-script.py 在 Windows PowerShell 5 中验证真实 TCP 接受 / 拒绝、逗号端口参数、嵌入 Python 真实本机连接、远端 SSH 模拟返回和失败分类、输入拒绝、超时对照结论与 JSON 报告。测试无生产连接。
+- 工具 network-diagnose.ps1 与 docs/Network-Diagnostics.md；主控仍 v0.2.46，采集端仍 0.2.5。未新增面板监测或告警。
+
+## v0.2.47 · 2026-11-02
+
+- 126 项 Node 测试通过。新增同机换址真实 SSH 协议检查：固定原 host key、不同主机 / 错密码 / 不同节点拒绝、身份校验成功后保留密钥 / 规则 / 历史、验证中部署和并发修改互斥、核验期间配置变化拒绝覆盖、CSRF 和输入校验。真实 Python 固定只读代码验证引擎归属优先与旧采集配置兼容，未连接生产。
+- work/browser-0247.mjs Chrome 验证配置表单选项显示 / 重置、布尔值与新地址提交、保存成功提示、新建节点隐藏选项、手机和深色显示。保存响应模拟，SSH 协议与身份逻辑由后端测试验证。采集端仍 0.2.5。
