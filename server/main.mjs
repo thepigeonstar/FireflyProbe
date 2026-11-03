@@ -403,7 +403,8 @@ export async function createApp(options = {}) {
         if(path.startsWith('/api/forwarding')&&['POST','PUT','DELETE'].includes(method)&&forwardBatch.busy)fail(409,'转发安装 / 更新队列正在执行，请完成后再修改规则');
         if(path==='/api/forwarding/engine'&&method==='GET'){const id=new URL(req.url,'http://localhost').searchParams.get('node');if(!getNodes().some(n=>n.id===id))fail(404,'服务器不存在');return send(res,200,forwarding.engineInfo(id));}
         const engineRoute=/^\/api\/forwarding\/engine\/([a-f0-9-]{36})$/.exec(path);if(engineRoute&&method==='POST')fail(410,'转发统一使用共享进程，请使用规则的安装 / 更新操作');
-        if(path==='/api/forwarding/relay'&&method==='GET'){const rule=new URL(req.url,'http://localhost').searchParams.get('rule');return send(res,200,{plan:forwardRelay.latest(rule)});}
+        if(path==='/api/forwarding/relay'&&method==='GET'){const rule=new URL(req.url,'http://localhost').searchParams.get('rule');return send(res,200,{plan:forwardRelay.latest(rule),connection:forwardRelay.connection(rule)});}
+        const relayDirect=/^\/api\/forwarding\/([a-f0-9-]{36})\/relay\/direct$/.exec(path);if(relayDirect&&method==='POST')return send(res,202,forwardRelay.direct(relayDirect[1],await body(req)));
         const relayBegin=/^\/api\/forwarding\/([a-f0-9-]{36})\/relay$/.exec(path);if(relayBegin&&method==='POST')return send(res,202,forwardRelay.begin(relayBegin[1],await body(req)));
         const relayRoute=/^\/api\/forwarding\/relay\/([a-f0-9-]{36})(?:\/(apply|cancel))?$/.exec(path);
         if(relayRoute&&method==='GET'&&!relayRoute[2])return send(res,200,forwardRelay.view(relayRoute[1]));
@@ -459,7 +460,7 @@ export async function createApp(options = {}) {
         const sshRoute=/^\/api\/nodes\/([a-f0-9-]{36})\/ssh\/(probe|trust|test|deploy)$/.exec(path);
         if(sshRoute&&method==='POST'){const [unused,id,action]=sshRoute;if(action==='probe')return send(res,200,await ssh.probe(id));if(action==='trust'){const input=await body(req);ssh.trust(id,input.fingerprint);return send(res,200,{ok:true});}if(action==='test')return send(res,200,await ssh.test(id));return send(res,202,ssh.deploy(id));}
         const jobRoute=/^\/api\/ssh\/jobs\/([a-f0-9-]{36})$/.exec(path);if(jobRoute&&method==='GET')return send(res,200,ssh.status(jobRoute[1]));
-        if(path==='/api/nodes'&&method==='GET') {const rates=fx.read();const {rates:unused,...fxInfo}=rates;return send(res,200,{nodes:snapshot(),settings:safeSettings(),cost_summary:costSummary(getNodes(),rates),fx_info:fxInfo,server_time:now(),version:'0.2.49',agent_version:'0.2.6'});}
+        if(path==='/api/nodes'&&method==='GET') {const rates=fx.read();const {rates:unused,...fxInfo}=rates;return send(res,200,{nodes:snapshot(),settings:safeSettings(),cost_summary:costSummary(getNodes(),rates),fx_info:fxInfo,server_time:now(),version:'0.2.50',agent_version:'0.2.6'});}
         const adminNetwork=/^\/api\/nodes\/([a-f0-9-]{36})\/network-history$/.exec(path);if(adminNetwork&&method==='GET')return send(res,200,publicHistory(adminNetwork[1],true));
         if(path==='/api/network/history'&&method==='GET')return send(res,200,publicHistory('network',true));
         if(path==='/api/costs'&&method==='GET')return send(res,200,{...costSummary(getNodes(),fx.read()),fx:fx.read()});
@@ -539,6 +540,6 @@ export async function createApp(options = {}) {
 function formatBytes(bytes) {const units=['B','KiB','MiB','GiB','TiB'];let i=0;while(bytes>=1024&&i<4){bytes/=1024;i++;}return bytes.toFixed(1)+' '+units[i];}
 if(process.argv[1] && import.meta.url===pathToFileURL(resolve(process.argv[1])).href) {
   const app=await createApp();
-  app.server.listen(Number(process.env.PORT ?? 8080),process.env.HOST ?? '127.0.0.1',()=>console.log(`Firefly Probe 0.2.49 listening on ${process.env.HOST ?? '127.0.0.1'}:${process.env.PORT ?? 8080}`));
+  app.server.listen(Number(process.env.PORT ?? 8080),process.env.HOST ?? '127.0.0.1',()=>console.log(`Firefly Probe 0.2.50 listening on ${process.env.HOST ?? '127.0.0.1'}:${process.env.PORT ?? 8080}`));
   let stopping=false;for(const sig of ['SIGINT','SIGTERM']) process.on(sig,async()=>{if(stopping)return;stopping=true;await app.close();process.exit(0);});
 }
