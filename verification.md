@@ -376,3 +376,9 @@ Installer locale hotfix: braced variables adjacent to Chinese punctuation in tim
 - 132 项 Node 测试通过。中转新增覆盖：旧独立 / 共享入口更换 B→D、沿用原 C、同一 B 换端口、取消回 A→C、再次添加 / 复用、旧 B 规则与历史保留、失败不覆盖原路径、旧 B 离线或已删时恢复、重复请求 / 等待确认冲突及新接口认证 / CSRF。
 - Chrome 页面检查通过：已完成任务可重新设置、选择新中转预览原落地、两步提交及进度轮询、取消中转显示直连与入口日志、完成后重新调整、手机窄屏 / 深色布局。SSH 返回通过模拟接口提供；后端使用真实 SQLite 与部署任务回调测试。截图 outputs/更换中转-v0.2.50.png 只含测试数据。
 - 本次仅主控 / 页面变更，采集端保持 0.2.6，未修改 GOST 远端执行器。未连接生产 VPS、未推送 GitHub，也未在本机执行 Linux GOST / systemd / OpenRC 测试；仍需上传后等待 GitHub Check 通过并在实际链路确认。
+
+## v0.2.51 · 2026-11-07
+
+- Python 共享引擎控制器 12 项测试通过，新增真实本地 HTTP 服务返回超过 16 MiB 的 Metrics，确认成功读取末尾计数、输出最终快照并停止目标规则，其他规则的清单不变、共享进程不停止。
+- 超限、超长行、声明 Content-Length 截断、无效计数、缺少标记均拒绝部分快照并保持规则 / 状态 / 清单不变；截止时间与采样清单变化检查通过。超限拒绝路径使用缩小阈值验证，并断言正式阈值为 64 MiB。
+- 132 项 Node 测试通过。仅修改主控下发的 Python 控制器及发布元数据；采集端仍为 0.2.6。未连接生产或推送 GitHub，本地未运行真实 Linux GOST / systemd / OpenRC，仍需 GitHub Check 与线上重试确认。

@@ -26,6 +26,9 @@ HELPER = '/opt/firefly-forward/engine.py'
 UUID = re.compile(r'^[a-f0-9-]{36}$')
 METRIC = re.compile(r'^(gost_service_transfer_input_bytes_total|gost_service_transfer_output_bytes_total|gost_service_handler_errors_total)(?:\{(.*)\})?\s+(\S+)(?:\s+\d+)?$')
 SERVICE = re.compile(r'(?:^|,)\s*service="((?:\\.|[^"\\])*)"(?:,|$)')
+METRICS_LIMIT = 64*1024*1024
+METRICS_LINE_LIMIT = 64*1024
+METRICS_TIMEOUT = 15
 
 
 def write(path, value):
@@ -58,8 +61,40 @@ def http(port, path, method='GET', value=None, password=None):
     with opener.open(request, timeout=5) as response:
         body = response.read(16*1024*1024+1)
     if len(body) > 16*1024*1024:
-        raise RuntimeError('Metrics 超过 16 MiB，未执行切换')
+        raise RuntimeError('GOST API 响应超过 16 MiB，未执行操作')
     return body
+
+
+def metrics_lines(port):
+    """Bounded streaming snapshot: never keep a full Metrics response in memory."""
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), NoRedirect())
+    deadline = time.monotonic()+METRICS_TIMEOUT
+    with opener.open('http://127.0.0.1:%d/metrics' % port, timeout=5) as response:
+        pending, total = b'', 0
+        while True:
+            if time.monotonic() > deadline:
+                raise RuntimeError('Metrics 快照读取超时，未执行切换')
+            chunk = response.read1(min(64*1024, METRICS_LIMIT-total+1))
+            if time.monotonic() > deadline:
+                raise RuntimeError('Metrics 快照读取超时，未执行切换')
+            if not chunk:
+                length = response.headers.get('Content-Length')
+                if length is not None and total != int(length):
+                    raise RuntimeError('Metrics 响应不完整，未执行切换')
+                break
+            total += len(chunk)
+            if total > METRICS_LIMIT:
+                raise RuntimeError('Metrics 超过 64 MiB，未执行切换')
+            lines = (pending+chunk).split(b'\n')
+            pending = lines.pop()
+            for line in lines:
+                if len(line) > METRICS_LINE_LIMIT:
+                    raise RuntimeError('Metrics 单行超过 64 KiB，未执行切换')
+                yield line.decode('utf-8').rstrip('\r')
+            if len(pending) > METRICS_LINE_LIMIT:
+                raise RuntimeError('Metrics 单行超过 64 KiB，未执行切换')
+        if pending:
+            yield pending.decode('utf-8').rstrip('\r')
 
 
 def service_names(rule):
@@ -157,12 +192,12 @@ def validate(payload):
 
 def snapshot(rule, path, emit=True):
     m = read(path)
-    raw = http(m['port'], '/metrics').decode('utf-8')
-    if 'gost_services' not in raw:
-        raise RuntimeError('Metrics 无效，保留原部署')
     totals = dict(rx=0, tx=0, errors=0)
     names = set(m.get('services', []))
-    for line in raw.splitlines():
+    marker = False
+    for line in metrics_lines(m['port']):
+        if 'gost_services' in line:
+            marker = True
         match = METRIC.fullmatch(line)
         if not match:
             continue
@@ -175,6 +210,10 @@ def snapshot(rule, path, emit=True):
             raise RuntimeError('Metrics 计数无效')
         key = 'rx' if 'input_bytes' in match.group(1) else 'tx' if 'output_bytes' in match.group(1) else 'errors'
         totals[key] += int(value)
+        if totals[key] > 8e15:
+            raise RuntimeError('Metrics 累计计数无效')
+    if not marker:
+        raise RuntimeError('Metrics 无效，保留原部署')
     if read(path) != m:
         raise RuntimeError('采样期间服务重启，请重试')
     sample = dict(id=rule['id'], epoch=m['epoch'], sampled=max(int(time.time()), rule.get('last_sampled', 0)+1), available=True, **totals)

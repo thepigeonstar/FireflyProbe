@@ -29,10 +29,20 @@ class EngineTest(unittest.TestCase):
         self.running = {engine.UNIT:False, **{'firefly-forward-'+r['id']:r['state']=='running' for r in self.rules}}
         self.listed, self.counters, self.calls = {}, {}, []
         self.fail_port = None
+        self.metrics_body = None
+        self.metrics_length = None
         owner = self
         class Handler(BaseHTTPRequestHandler):
             def do_GET(self):
                 if self.path=='/metrics':
+                    if owner.metrics_body is not None:
+                        self.send_response(200)
+                        if owner.metrics_length is not None:
+                            self.send_header('Content-Length', str(owner.metrics_length))
+                        self.end_headers()
+                        try:self.wfile.write(owner.metrics_body)
+                        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):pass
+                        return
                     text = 'gost_services 3\n'
                     for name in ['legacy']+list(owner.counters):
                         rx,tx = owner.counters.get(name, (100,200))
@@ -143,6 +153,57 @@ class EngineTest(unittest.TestCase):
         self.assertFalse(list(engine.MANIFESTS.glob('*.json')))
         engine.execute(dict(payload,owner=str(uuid.uuid4())))
         self.assertTrue(self.running[engine.UNIT])
+
+    def test_large_metrics_snapshot_then_stop_preserves_other_services(self):
+        engine.migrate(self.payload('migrate'))
+        a,b=self.rules[:2];state=engine.read(engine.ROOT/'state.json')
+        name=engine.service_names(state['rules'][a['id']])[0]
+        prefix=('gost_services 3\ngost_service_transfer_input_bytes_total{service="%s"} 31\n' % name).encode()
+        # More than the old 16 MiB limit, with a counter at the very end.
+        self.metrics_body=prefix+(b'# padding '+b'x'*1000+b'\n')*18000+('gost_service_transfer_output_bytes_total{service="%s"} 42\n' % name).encode()
+        self.assertGreater(len(self.metrics_body),16*1024*1024)
+        before=(engine.MANIFESTS/(b['id']+'.json')).read_bytes();self.calls.clear()
+        engine.apply(self.payload('stop',id=a['id']))
+        samples=[json.loads(line[14:]) for line in self.output.getvalue().splitlines() if line.startswith('FIREFLY_FINAL ')]
+        self.assertEqual((samples[-1]['rx'],samples[-1]['tx']),(31,42))
+        self.assertFalse(engine.read(engine.ROOT/'state.json')['rules'][a['id']]['active'])
+        self.assertEqual((engine.MANIFESTS/(b['id']+'.json')).read_bytes(),before)
+        self.assertNotIn(('stop',engine.UNIT),self.calls)
+
+    def test_failed_metrics_never_emit_partial_sample_or_change_rule(self):
+        engine.migrate(self.payload('migrate'));a=self.rules[0]
+        before=(engine.ROOT/'state.json').read_bytes();manifest=(engine.MANIFESTS/(a['id']+'.json')).read_bytes()
+        name=engine.service_names(engine.read(engine.ROOT/'state.json')['rules'][a['id']])[0]
+        self.assertEqual(engine.METRICS_LIMIT,64*1024*1024)
+        cases=[(b'gost_services 1\n'+b'# x\n'*300,1024,None,'超过 64 MiB'),
+               (b'gost_services 1\n'+b'x'*(64*1024+1),engine.METRICS_LIMIT,None,'单行'),
+               (b'gost_services 1\n',engine.METRICS_LIMIT,1000,'不完整'),
+               (('gost_services 1\ngost_service_transfer_input_bytes_total{service="%s"} -1\n' % name).encode(),engine.METRICS_LIMIT,None,'计数无效'),
+               (b'# no service marker\n',engine.METRICS_LIMIT,None,'Metrics 无效')]
+        for body,limit,length,error in cases:
+            with self.subTest(error=error):
+                self.metrics_body,self.metrics_length=body,length;self.output.seek(0);self.output.truncate();self.calls.clear()
+                with patch.object(engine,'METRICS_LIMIT',limit):
+                    with self.assertRaisesRegex(RuntimeError,error):engine.apply(self.payload('stop',id=a['id']))
+                self.assertNotIn('FIREFLY_FINAL ',self.output.getvalue())
+                self.assertEqual((engine.ROOT/'state.json').read_bytes(),before)
+                self.assertEqual((engine.MANIFESTS/(a['id']+'.json')).read_bytes(),manifest)
+                self.assertFalse(any(call[0] in ('delete','stop') for call in self.calls))
+
+    def test_metrics_deadline_and_manifest_change_reject_sample(self):
+        a=self.rules[0];path=engine.MANIFESTS/(a['id']+'.json')
+        with patch.object(engine.time,'monotonic',side_effect=[0,16]):
+            with self.assertRaisesRegex(RuntimeError,'超时'):engine.snapshot(a,path)
+        self.assertNotIn('FIREFLY_FINAL ',self.output.getvalue())
+        original=engine.read
+        def changed(p):
+            value=original(p)
+            if getattr(changed,'seen',False):value['epoch']=str(uuid.uuid4())
+            changed.seen=True
+            return value
+        with patch.object(engine,'read',side_effect=changed):
+            with self.assertRaisesRegex(RuntimeError,'服务重启'):engine.snapshot(a,path)
+        self.assertNotIn('FIREFLY_FINAL ',self.output.getvalue())
 
 
 if __name__=='__main__':unittest.main()
