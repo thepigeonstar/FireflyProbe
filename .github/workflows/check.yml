@@ -19,10 +19,17 @@ jobs:
       - run: python3 -B tests/forward-engine.test.py
       - run: go test ./... && go vet ./...
         working-directory: agent
-      - run: bash -n setup.sh update.sh install-master.sh uninstall-master.sh tools/uninstall-traffic-reporter.sh agent/install.sh agent/bootstrap.sh agent/entry.sh
-      - run: shellcheck -S warning setup.sh update.sh install-master.sh uninstall-master.sh tools/uninstall-traffic-reporter.sh agent/install.sh agent/bootstrap.sh agent/entry.sh
+      - run: for script in setup.sh update.sh install-master.sh uninstall-master.sh tools/uninstall-traffic-reporter.sh agent/install.sh agent/bootstrap.sh agent/entry.sh tests/download-gost.sh tests/gost-forwarding.test.sh; do bash -n "$script" || exit; done
+      - run: shellcheck -S warning setup.sh update.sh install-master.sh uninstall-master.sh tools/uninstall-traffic-reporter.sh agent/install.sh agent/bootstrap.sh agent/entry.sh tests/download-gost.sh tests/gost-forwarding.test.sh
       - run: sudo bash tests/install-master.test.sh
       - run: bash tests/docker-bootstrap.test.sh
       - run: docker build -t lightprobe-check .
       - run: bash tests/alpine-install.test.sh
+      - uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/firefly-gost
+          key: gost-3.3.0-linux-amd64-676fb7f78d267b6ae73df719c0c7f2b565dde7147da935cfafbc1e1da558b6d5
       - run: bash tests/gost-forwarding.test.sh
+        env:
+          GOST_TEST_ARCHIVE: ${{ runner.temp }}/firefly-gost/gost.tar.gz
+          GITHUB_TOKEN: ${{ github.token }}

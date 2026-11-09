@@ -401,3 +401,10 @@ Installer locale hotfix: braced variables adjacent to Chinese punctuation in tim
 - 脚本唯一下载使用 curl -f，结合退出码定位下载 HTTP 错误。当前从官方 URL 下载成功，SHA256 为 676fb7f78d267b6ae73df719c0c7f2b565dde7147da935cfafbc1e1da558b6d5，与固定校验值相符。不能据此声称过去一定是 503 / 429。
 - 增加 curl 4 次重试、3 秒间隔、180 秒重试预算、单次最多 120 秒，保留 HTTPS / SHA 校验；打印最终 HTTP 状态，仍失败保留原 curl 退出码，不跳过后续测试。Bash 语法检查与本地下载路径测试通过：模拟失败 22 保持非零且不运行测试；使用真实官方下载包验证 SHA 后到达两个测试入口，Python/GOST 执行在该路径测试中用替身，仅验证调用控制。
 - 应用代码及版本号不变，仍主控 0.2.53 / 采集端 0.2.6；不重复运行无关应用测试。Linux 真实转发仍需用户重新上传后由 GitHub 执行，尚未确认远端 Check 成功。
+
+### v0.2.53 官方 API 下载与缓存补丁 · 2026-11-09
+
+- 用户提供 Check #64 完整日志，官方浏览器下载 URL 重试五次均 HTTP 504，确认非测试断言失败。新增 tests/download-gost.sh，固定官方 release asset ID 536443639 与原 SHA256；优先 GitHub Assets API，workflow Token 不可用时尝试公共 API，最终备用官方直链，每条路径保留重试、HTTPS限制和 SHA 校验。
+- 工作流缓存 runner.temp/firefly-gost，以版本 / 架构 / 完整 SHA 为固定键；每次使用缓存前重新校验。损坏缓存重新下载；两条官方路径均失败或内容校验不符则阻止转发测试，不当作通过。临时认证头放在权限受限文件中，完成 / 失败均删除，不输出原始认证值；没有使用第三方镜像。
+- 本地实际运行下载辅助脚本，官方 API HTTP 200 且 SHA256 正确。下载分支检查覆盖 API 成功、HTTP失败 / 错误内容后切备用、全部失败、缓存离线复用 / 损坏重下及临时认证文件清理。HTTP 分支用替身，SHA使用真实官方下载包；不代表 Linux GOST 转发已跑过。两份 Bash 脚本语法通过，工作流将两脚本加入 ShellCheck。
+- 应用仍 v0.2.53 / 采集端 0.2.6，未更改业务代码，未推送。需用户重新上传触发 CI；尚未确认 GitHub 网络环境下载或 Linux 实际转发通过。
