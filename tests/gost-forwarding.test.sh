@@ -3,7 +3,17 @@ set -euo pipefail
 temporary=$(mktemp -d)
 trap 'rm -rf -- "$temporary"' EXIT
 echo 'Downloading official GOST 3.3.0 Linux amd64 archive...'
-curl --proto '=https' --proto-redir '=https' --tlsv1.2 -fsSL --connect-timeout 15 --max-time 300 https://github.com/go-gost/gost/releases/download/v3.3.0/gost_3.3.0_linux_amd64.tar.gz -o "$temporary/gost.tar.gz"
+if curl --proto '=https' --proto-redir '=https' --tlsv1.2 -fsSL \
+  --retry 4 --retry-delay 3 --retry-max-time 180 --retry-connrefused \
+  --connect-timeout 15 --max-time 120 \
+  --write-out 'GOST download HTTP status: %{http_code}\n' \
+  https://github.com/go-gost/gost/releases/download/v3.3.0/gost_3.3.0_linux_amd64.tar.gz -o "$temporary/gost.tar.gz"; then
+  :
+else
+  download_status=$?
+  echo "Official GOST download failed (curl exit $download_status). No forwarding tests were skipped; retry this check after the HTTP error is resolved." >&2
+  exit "$download_status"
+fi
 printf '%s  %s\n' 676fb7f78d267b6ae73df719c0c7f2b565dde7147da935cfafbc1e1da558b6d5 "$temporary/gost.tar.gz" | sha256sum -c -
 tar -xzf "$temporary/gost.tar.gz" -C "$temporary" gost
 echo 'Testing real TCP and UDP loopback forwarding...'

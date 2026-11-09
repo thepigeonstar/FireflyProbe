@@ -394,3 +394,10 @@ Installer locale hotfix: braced variables adjacent to Chinese punctuation in tim
 - 134 项 Node 测试通过。新增批量删除选中范围、串行任务 / 互斥、草稿无 SSH、失败与跳过保留、未知 / 重复 / 跨范围 ID 拒绝，以及新操作的认证 / CSRF、真实 SQLite 草稿删除与服务器节点保留。
 - Chrome 使用本地真实主控 API / SQLite 通过默认不选、全选 / 清空、仅选中删除、完成进度、未选规则保留、安装窗口标题切回、手机窄屏 / 深色布局；实际只删除测试草稿，无生产 SSH。work/browser-0253.mjs，测试截图 outputs/批量删除-v0.2.53.png。
 - 远端删除沿用已有单条删除控制器，未改 GOST Python 执行器或采集端（仍 0.2.6）。未推送 GitHub、未连接生产；Linux 真实服务删除仍需 CI 和用户实际确认。
+
+### v0.2.53 检查脚本补丁 · 2026-11-09
+
+- GitHub Check #63（run 42579119083 / commit 0fb6017）在 Run bash tests/gost-forwarding.test.sh 失败，退出码 22。其余此前步骤通过；未登录下载日志接口返回 403，未获原请求具体 HTTP 状态。
+- 脚本唯一下载使用 curl -f，结合退出码定位下载 HTTP 错误。当前从官方 URL 下载成功，SHA256 为 676fb7f78d267b6ae73df719c0c7f2b565dde7147da935cfafbc1e1da558b6d5，与固定校验值相符。不能据此声称过去一定是 503 / 429。
+- 增加 curl 4 次重试、3 秒间隔、180 秒重试预算、单次最多 120 秒，保留 HTTPS / SHA 校验；打印最终 HTTP 状态，仍失败保留原 curl 退出码，不跳过后续测试。Bash 语法检查与本地下载路径测试通过：模拟失败 22 保持非零且不运行测试；使用真实官方下载包验证 SHA 后到达两个测试入口，Python/GOST 执行在该路径测试中用替身，仅验证调用控制。
+- 应用代码及版本号不变，仍主控 0.2.53 / 采集端 0.2.6；不重复运行无关应用测试。Linux 真实转发仍需用户重新上传后由 GitHub 执行，尚未确认远端 Check 成功。
