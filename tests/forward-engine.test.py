@@ -144,6 +144,7 @@ class EngineTest(unittest.TestCase):
 
     def test_fresh_install_last_remove_and_new_owner(self):
         for path in engine.MANIFESTS.glob('*.json'):path.unlink()
+        self.running = {unit:False for unit in self.running}
         rule={**self.rules[0],'installed':False,'state':'not_deployed'}
         payload=dict(owner=self.owner,action='start',id=rule['id'],rules=[rule],ensure_shared=True)
         engine.execute(payload)
@@ -153,6 +154,55 @@ class EngineTest(unittest.TestCase):
         self.assertFalse(list(engine.MANIFESTS.glob('*.json')))
         engine.execute(dict(payload,owner=str(uuid.uuid4())))
         self.assertTrue(self.running[engine.UNIT])
+
+    def empty_remote(self):
+        for path in engine.MANIFESTS.glob('*.json'):path.unlink()
+        self.running = {unit:False for unit in self.running}
+        self.calls.clear()
+
+    def test_reinstalled_host_with_stale_shared_metadata_initializes_only_requested_rule(self):
+        self.empty_remote();a,b=self.rules[:2]
+        engine.execute(self.payload('start',id=a['id']))
+        state=engine.read(engine.ROOT/'state.json')
+        self.assertTrue(state['rules'][a['id']]['active'])
+        self.assertTrue(all(not r['active'] for ident,r in state['rules'].items() if ident!=a['id']))
+        self.assertEqual(set(state['rules']),{r['id'] for r in self.rules})
+        self.assertEqual(set(self.listed),set(engine.service_names(state['rules'][a['id']])))
+        self.assertIn('FIREFLY_ENGINE_RECREATED',self.output.getvalue())
+        self.calls.clear();engine.execute(self.payload('start',id=b['id']))
+        self.assertFalse(any(c[0]=='stop' and c[1]==engine.UNIT for c in self.calls))
+        self.assertEqual(len(self.listed),3)
+
+    def test_reinstalled_host_status_stop_remove_do_not_start_engine(self):
+        self.empty_remote()
+        for action in ['status','stop','remove']:
+            engine.execute(self.payload(action,id=self.rules[0]['id']))
+        self.assertFalse((engine.ROOT/'state.json').exists())
+        self.assertFalse(any(c[0]=='start' for c in self.calls))
+        self.assertIn('FIREFLY_FORWARD_REMOVED',self.output.getvalue())
+
+    def test_missing_state_never_overwrites_partial_or_running_deployment(self):
+        # Existing manifests / legacy units must not be treated as a clean reinstalled host.
+        with self.assertRaisesRegex(RuntimeError,'拒绝覆盖'):engine.execute(self.payload('start',id=self.rules[0]['id']))
+        self.assertFalse((engine.ROOT/'state.json').exists())
+        self.empty_remote();engine.write(engine.ROOT/'config.json',{'preserve':'existing'})
+        with self.assertRaisesRegex(RuntimeError,'拒绝'):engine.execute(self.payload('start',id=self.rules[0]['id']))
+        with self.assertRaisesRegex(RuntimeError,'拒绝'):engine.execute(self.payload('start',id=self.rules[0]['id'],ensure_shared=True))
+        self.assertEqual(engine.read(engine.ROOT/'config.json'),{'preserve':'existing'})
+        (engine.ROOT/'config.json').unlink();self.running[engine.UNIT]=True
+        with self.assertRaisesRegex(RuntimeError,'拒绝'):engine.execute(self.payload('start',id=self.rules[0]['id']))
+        self.assertFalse(any(c[0]=='stop' for c in self.calls))
+
+    def test_reinitialization_failure_can_retry_without_starting_other_rules(self):
+        self.empty_remote();real=self.manager
+        def failed(action,unit=engine.UNIT):
+            if action=='start' and unit==engine.UNIT:raise RuntimeError('fixture start failed')
+            return real(action,unit)
+        with patch.object(engine,'manager',side_effect=failed):
+            with self.assertRaisesRegex(RuntimeError,'fixture'):engine.execute(self.payload('start',id=self.rules[0]['id']))
+        self.assertTrue(all(not r['active'] for r in engine.read(engine.ROOT/'state.json')['rules'].values()))
+        engine.execute(self.payload('start',id=self.rules[0]['id']))
+        self.assertEqual(sum(r['active'] for r in engine.read(engine.ROOT/'state.json')['rules'].values()),1)
 
     def test_empty_api_list_status_delete_and_install_after_all_stopped(self):
         engine.migrate(self.payload('migrate'))

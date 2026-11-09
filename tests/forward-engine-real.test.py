@@ -123,6 +123,15 @@ with tempfile.TemporaryDirectory() as directory:
             for rule in list(by_id.values()):engine.execute(payload('remove',id=rule['id']))
             assert sum(p.poll() is None for p in processes.values())==0
             assert not (engine.ROOT/'state.json').exists()
+            # Reinstalled/empty host while the master still remembers shared installed rules.
+            engine.execute(payload('start',id=replacement['id']))
+            probe(replacement)
+            restored=engine.read(engine.ROOT/'state.json')
+            assert sum(r['active'] for r in restored['rules'].values())==1
+            assert restored['rules'][replacement['id']]['active']
+            assert sum(p.poll() is None for p in processes.values())==1
+            for rule in list(by_id.values()):engine.execute(payload('remove',id=rule['id']))
+            assert not (engine.ROOT/'state.json').exists()
             print('Real GOST shared engine: migration, one process, TCP/UDP, service counters, stop/resume/edit isolation, occupied-port rollback and legacy return passed.')
     except Exception:
         for log in logs:

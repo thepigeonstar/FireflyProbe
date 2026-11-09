@@ -43,8 +43,15 @@ def write(path, value):
 
 
 def read(path):
-    with open(path, encoding='utf-8') as f:
-        return json.load(f)
+    try:
+        with open(path, encoding='utf-8') as f:
+            return json.load(f)
+    except FileNotFoundError:
+        if pathlib.Path(path) == ROOT/'state.json':
+            raise RuntimeError('共享引擎状态文件缺失，请通过安装 / 更新重新初始化；存在遗留服务时需先核对') from None
+        if pathlib.Path(path).parent == MANIFESTS:
+            raise RuntimeError('规则统计文件缺失，已停止操作以免丢失最后计数；请核对远端规则') from None
+        raise
 
 
 class NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -475,6 +482,47 @@ def rollback(payload):
         raise
 
 
+def legacy_artifacts(payload):
+    if list(MANIFESTS.glob('*.json')):
+        return True
+    for directory, suffix in [('/etc/systemd/system','.service'),('/usr/lib/systemd/system','.service'),('/lib/systemd/system','.service'),('/etc/init.d','')]:
+        for path in pathlib.Path(directory).glob('firefly-forward-*'+suffix):
+            name = path.name[:-len(suffix)] if suffix else path.name
+            if UUID.fullmatch(name.removeprefix('firefly-forward-')):
+                return True
+    for r in payload['rules']:
+        if manager('status', 'firefly-forward-'+r['id']):
+            return True
+    return False
+
+
+def require_empty_remote(payload):
+    if (ROOT/'config.json').exists() or (ROOT/'migration.json').exists() or legacy_artifacts(payload):
+        raise RuntimeError('引擎状态缺失但仍有配置 / 独立服务，拒绝覆盖；请先核对远端服务')
+    if manager('status'):
+        raise RuntimeError('引擎状态缺失但共享服务仍运行，拒绝覆盖；请先核对远端服务')
+
+
+def initialize_empty_remote(payload):
+    require_empty_remote(payload)
+    excluded = {r['listen_port'] for r in payload['rules']}
+    api_port = choose_port(excluded)
+    state = dict(owner=payload['owner'], mode='shared', api_port=api_port,
+                 metrics_port=choose_port(excluded|{api_port}), password=secrets.token_hex(32),
+                 process_epoch=str(uuid.uuid4()), rules={})
+    # Keep old IDs available, but never restart every saved rule after reinstall.
+    for r in payload['rules']:
+        if r.get('installed'):
+            state['rules'][r['id']] = {**r, 'generation':str(uuid.uuid4()), 'active':False, 'state':'stopped'}
+    persist(state)
+    print('FIREFLY_ENGINE_RECREATED', flush=True)
+    print('已重新初始化空机器的共享引擎；本次仅安装所选规则，其他规则等待安装，主控已有流量历史保留。', flush=True)
+    install_unit()
+    manager('start')
+    wait_ready()
+    print('FIREFLY_ENGINE_SHARED', flush=True)
+
+
 def execute(payload):
     if payload['action']=='migrate':
         migrate(payload)
@@ -483,6 +531,16 @@ def execute(payload):
         rollback(payload)
         print('FIREFLY_ENGINE_LEGACY')
     else:
+        if not (ROOT/'state.json').exists() and ((ROOT/'config.json').exists() or (ROOT/'migration.json').exists() or manager('status')):
+            raise RuntimeError('状态文件缺失但存在引擎配置 / 运行服务，拒绝自动重建；请先核对远端服务')
+        if not (ROOT/'state.json').exists() and not (payload.get('ensure_shared') and legacy_artifacts(payload)):
+            if payload['action'] in ('start', 'resume', 'edit'):
+                initialize_empty_remote(payload)
+            elif payload['action'] in ('status', 'stop', 'remove'):
+                require_empty_remote(payload)
+                print('远端无萤火部署文件。\nFIREFLY_ENGINE_EMPTY')
+                print('FIREFLY_FORWARD_REMOVED' if payload['action']=='remove' else 'FIREFLY_FORWARD_STOPPED')
+                return
         if payload.get('ensure_shared'):
             print('正在准备统一转发服务；旧实例将自动合并，已有连接可能短暂中断。', flush=True)
             migrate(payload)

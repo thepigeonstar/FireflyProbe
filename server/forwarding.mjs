@@ -150,7 +150,8 @@ export function createForwarding(db,ssh,timezone=()=> 'Asia/Shanghai'){
  }
  function autoFinish(nodeID,job){
   const value=engineRead(nodeID);if(value.checked_job===job.id)return;
-  const migrated=value.mode==='shared'||job.log.includes('FIREFLY_ENGINE_SHARED');
+  if(job.log.includes('FIREFLY_ENGINE_RECREATED'))for(const r of records().filter(r=>r.node_id===nodeID&&r.id!==value.auto_rule)){r.state='stopped';r.health='waiting';r.metrics_available=false;save(r);}
+  const migrated=value.mode==='shared'||job.log.includes('FIREFLY_ENGINE_SHARED')||job.log.includes('FIREFLY_ENGINE_RECREATED');
   try{acceptFinal(nodeID,job);}catch{job={...job,status:'failed',log:job.log+'\n最终采样未能入库，请核对历史。'};}
   const row=db.prepare('SELECT value FROM settings WHERE key=?').get(key(value.auto_rule));
   if(row){const r=JSON.parse(row.value);if(migrated)reconcile(r,job);else{delete r.pending_edit;r.checked_job=job.id;r.last_log=job.log;save(r);}}

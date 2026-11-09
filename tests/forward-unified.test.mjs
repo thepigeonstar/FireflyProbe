@@ -11,3 +11,12 @@ test('统一共享入口：旧机器自动迁移、新增复用、失败不降�
  f.action(id,'start');finish('单条失败，已恢复','failed');assert.equal(f.engineInfo(node).mode,'shared');f.action(id,'remove');finish('FIREFLY_FORWARD_REMOVED');assert.equal(f.list().length,1);f.action(other.id,'remove');finish('FIREFLY_ENGINE_EMPTY\nFIREFLY_FORWARD_REMOVED');assert.equal(f.hasNode(node),false);assert.equal(f.engineInfo(node).mode,'legacy');
  }finally{db.close();rmSync(dir,{recursive:true,force:true});}
 });
+
+test('重装后重新初始化：停止其他旧状态、保留历史，只有目标规则运行',()=>{
+ const dir=mkdtempSync(join(tmpdir(),'reinstalled-')),db=openStore(join(dir,'db.sqlite')),node=randomUUID(),ids=[randomUUID(),randomUUID()],jobs=new Map();let callback;
+ const ssh={busy:()=>false,status:id=>jobs.get(id),runManaged(n,script,cb){callback=cb;const job={id:randomUUID(),status:'running',log:''};jobs.set(job.id,job);return job;}};
+ try{db.prepare('INSERT INTO nodes(id,name,token_hash,created,last_version) VALUES(?,?,?,?,?)').run(node,'重装','hash',1,'0.2.6');db.prepare('INSERT INTO settings VALUES(?,?)').run('forward_engine:'+node,JSON.stringify({mode:'shared',status:'success'}));
+ for(const id of ids){db.prepare('INSERT INTO settings VALUES(?,?)').run('forwarding:'+id,JSON.stringify({id,node_id:node,name:'旧规则',protocol:'tcp',listen_port:10161+ids.indexOf(id),target_host:'192.0.2.1',target_port:443,installed:true,state:'running'}));db.prepare('INSERT INTO settings VALUES(?,?)').run('forward_day:'+id+':2026-11-09',JSON.stringify({rx:123,tx:456}));}
+ const f=createForwarding(db,ssh),job=f.action(ids[0],'start');Object.assign(job,{status:'success',log:'FIREFLY_ENGINE_RECREATED\nFIREFLY_ENGINE_SHARED\nFIREFLY_FORWARD_ACTIVE'});callback(job);const rules=f.list();assert.equal(rules.find(r=>r.id===ids[0]).state,'running');assert.equal(rules.find(r=>r.id===ids[1]).state,'stopped');for(const id of ids)assert.equal(JSON.parse(db.prepare('SELECT value FROM settings WHERE key=?').get('forward_day:'+id+':2026-11-09').value).rx,123);assert.equal(f.engineInfo(node).mode,'shared');
+ }finally{db.close();rmSync(dir,{recursive:true,force:true});}
+});
