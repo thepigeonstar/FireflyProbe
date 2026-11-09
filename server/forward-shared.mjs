@@ -30,7 +30,7 @@ exec(compile(base64.b64decode('${source}'),path,'exec'),scope)
 import json
 try: scope['main'](json.loads(base64.b64decode('${body}')))
 except Exception as exc:
- print('共享引擎操作失败：'+(str(exc) if isinstance(exc,RuntimeError) else type(exc).__name__))
+ print(scope['failure_message'](exc))
  raise SystemExit(1)
 FIREFLY_ENGINE
 `;

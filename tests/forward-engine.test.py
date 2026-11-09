@@ -52,7 +52,7 @@ class EngineTest(unittest.TestCase):
                 expected='Basic '+engine.base64.b64encode(('firefly:'+state['password']).encode()).decode()
                 if self.headers.get('Authorization')!=expected:
                     self.send_response(401);self.end_headers();return
-                self.send_response(200);self.end_headers();self.wfile.write(json.dumps({'code':0,'data':{'count':len(owner.listed),'list':list(owner.listed.values())}}).encode())
+                self.send_response(200);self.end_headers();self.wfile.write(json.dumps({'code':0,'data':{'count':len(owner.listed),'list':list(owner.listed.values()) or None}}).encode())
             def do_POST(self):
                 value=json.loads(self.rfile.read(int(self.headers['Content-Length'])))
                 if value['addr']==':'+str(owner.fail_port):
@@ -153,6 +153,48 @@ class EngineTest(unittest.TestCase):
         self.assertFalse(list(engine.MANIFESTS.glob('*.json')))
         engine.execute(dict(payload,owner=str(uuid.uuid4())))
         self.assertTrue(self.running[engine.UNIT])
+
+    def test_empty_api_list_status_delete_and_install_after_all_stopped(self):
+        engine.migrate(self.payload('migrate'))
+        for r in self.rules[:2]:engine.apply(self.payload('stop',id=r['id']))
+        self.assertEqual(self.listed,{})
+        before=(engine.ROOT/'state.json').read_bytes();self.calls.clear()
+        engine.apply(self.payload('status',id=self.rules[0]['id']))
+        self.assertIn('FIREFLY_FORWARD_STOPPED',self.output.getvalue())
+        self.assertEqual((engine.ROOT/'state.json').read_bytes(),before)
+        state=engine.read(engine.ROOT/'state.json')
+        engine.delete_services(state,state['rules'][self.rules[0]['id']])
+        self.assertFalse(any(c[0]=='delete' for c in self.calls))
+        for r in self.rules:engine.apply(self.payload('start',id=r['id']))
+        self.assertEqual(len(self.listed),4)
+        self.assertTrue(all(r['active'] for r in engine.read(engine.ROOT/'state.json')['rules'].values()))
+
+    def test_api_list_shapes_and_invalid_list_never_means_empty(self):
+        valid=[{'data':{'count':0,'list':None}}, {'data':{'count':0,'list':[]}}, {'data':[{'name':'test'}]}, [{'name':'test'}], {'list':[{'name':'test'}],'count':1}]
+        for result in valid:
+            with patch.object(engine,'api',return_value=result):self.assertIsInstance(engine.listed_services({}),set)
+        invalid=[None,{'data':None},{'data':{'count':1,'list':None}},{'data':{'count':0,'list':[{'name':'test'}]}},{'data':{'list':'bad'}},{'data':{'list':[None]}},{'data':{'list':[{'name':'same'},{'name':'same'}]}}]
+        for result in invalid:
+            with self.subTest(result=result),patch.object(engine,'api',return_value=result):
+                with self.assertRaises(RuntimeError):engine.listed_services({})
+
+    def test_failed_first_install_from_empty_list_preserves_original_error(self):
+        engine.migrate(self.payload('migrate'))
+        for r in self.rules[:2]:engine.apply(self.payload('stop',id=r['id']))
+        self.fail_port=self.rules[0]['listen_port']
+        with self.assertRaises(engine.urllib.error.HTTPError):engine.apply(self.payload('start',id=self.rules[0]['id']))
+        self.assertEqual(self.listed,{})
+        self.assertTrue(all(not r['active'] for r in engine.read(engine.ROOT/'state.json')['rules'].values()))
+
+    def test_unexpected_error_location_without_secret_values(self):
+        space={}
+        exec(compile('def failing():\n raise TypeError("private-credential-value")\n',engine.HELPER,'exec'),space)
+        try:space['failing']()
+        except TypeError as exc:message=engine.failure_message(exc)
+        self.assertIn('TypeError',message);self.assertIn('failing:2',message);self.assertNotIn('private-credential',message)
+        error=engine.urllib.error.HTTPError('http://secret-url',409,'secret-message',None,None)
+        message=engine.failure_message(error)
+        self.assertIn('HTTP 409',message);self.assertNotIn('secret',message)
 
     def test_large_metrics_snapshot_then_stop_preserves_other_services(self):
         engine.migrate(self.payload('migrate'))

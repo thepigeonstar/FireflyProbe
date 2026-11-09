@@ -382,3 +382,9 @@ Installer locale hotfix: braced variables adjacent to Chinese punctuation in tim
 - Python 共享引擎控制器 12 项测试通过，新增真实本地 HTTP 服务返回超过 16 MiB 的 Metrics，确认成功读取末尾计数、输出最终快照并停止目标规则，其他规则的清单不变、共享进程不停止。
 - 超限、超长行、声明 Content-Length 截断、无效计数、缺少标记均拒绝部分快照并保持规则 / 状态 / 清单不变；截止时间与采样清单变化检查通过。超限拒绝路径使用缩小阈值验证，并断言正式阈值为 64 MiB。
 - 132 项 Node 测试通过。仅修改主控下发的 Python 控制器及发布元数据；采集端仍为 0.2.6。未连接生产或推送 GitHub，本地未运行真实 Linux GOST / systemd / OpenRC，仍需 GitHub Check 与线上重试确认。
+
+## v0.2.52 · 2026-11-09
+
+- Python 共享引擎 16 项测试通过。本地 HTTP 服务改为在没有服务时返回真实的 count:0/list:null，覆盖全部停止后检查状态、幂等清理、逐条重新安装 / 更新；最终四个协议服务均存在。
+- 覆盖空列表 / 数组格式、异常格式 / 数量不符 / 重复名称拒绝，以及从空列表首次安装失败后的恢复，确认保留原 HTTPError 而非被清理过程 TypeError 覆盖。异常位置与 HTTP 状态可读，凭据样本不回显。
+- 132 项 Node 测试通过（包括下发脚本 shell 语法）。本地没有生产 VPS 访问，未推送 GitHub，未运行 Linux 真实 GOST / systemd / OpenRC。需上传后等待 CI 通过，再在线重试确认是否存在其他原始失败原因。

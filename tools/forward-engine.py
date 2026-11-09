@@ -120,6 +120,41 @@ def api(state, path, method='GET', value=None):
     return result
 
 
+def listed_services(state):
+    result = api(state, '')
+    data = result.get('data', result) if isinstance(result, dict) else result
+    if isinstance(data, dict):
+        rows = data.get('list')
+        count = data.get('count')
+        # Go may encode an empty slice as null rather than [].
+        if rows is None and type(count) is int and count == 0:
+            rows = []
+        if count is not None and (type(count) is not int or count < 0 or not isinstance(rows, list) or count != len(rows)):
+            raise RuntimeError('GOST API 服务列表与数量不一致，未确认操作结果')
+    else:
+        rows = data
+    if not isinstance(rows, list) or any(not isinstance(r, dict) or not isinstance(r.get('name'), str) or not r['name'] for r in rows):
+        raise RuntimeError('GOST API 服务列表格式无效，未确认操作结果')
+    names = {r['name'] for r in rows}
+    if len(names) != len(rows):
+        raise RuntimeError('GOST API 服务列表包含重复名称，未确认操作结果')
+    return names
+
+
+def failure_message(exc):
+    if isinstance(exc, RuntimeError):
+        return '共享引擎操作失败：'+str(exc)
+    # Do not expose exception values, URLs, credentials, source lines or locals.
+    location, tb = '', exc.__traceback__
+    while tb:
+        code = tb.tb_frame.f_code
+        if code.co_filename == HELPER or pathlib.Path(code.co_filename).name == 'forward-engine.py':
+            location = '（位置：%s:%d）' % (code.co_name, tb.tb_lineno)
+        tb = tb.tb_next
+    status = ' HTTP '+str(exc.code) if isinstance(exc, urllib.error.HTTPError) and type(exc.code) is int else ''
+    return '共享引擎操作失败：'+type(exc).__name__+status+location
+
+
 def manifest(state, rule):
     return {'format': 2, 'id': rule['id'], 'epoch': str(uuid.uuid5(uuid.UUID(state['process_epoch']), rule['generation'])), 'port': state['metrics_port'], 'services': service_names(rule)}
 
@@ -234,20 +269,13 @@ def choose_port(excluded):
 def add_services(state, rule):
     for s in services(rule):
         api(state, '', 'POST', s)
-    listed = api(state, '')
-    rows = listed.get('data', listed) if isinstance(listed, dict) else listed
-    # GOST 3.x returns a service array under data.
-    if isinstance(rows, dict):
-        rows = rows.get('list', [])
-    names = {s.get('name') for s in rows}
+    names = listed_services(state)
     if not set(service_names(rule)) <= names:
         raise RuntimeError('新增规则未通过 API 核对')
 
 
 def delete_services(state, rule):
-    listing = api(state, '')
-    rows = listing.get('data', {}).get('list', [])
-    present = {r['name'] for r in rows}
+    present = listed_services(state)
     for name in service_names(rule):
         if name in present:
             api(state, '/'+name, 'DELETE')
@@ -353,13 +381,13 @@ def apply(payload):
     existing = state['rules'].get(ident)
     rule = next((r for r in payload['rules'] if r['id']==payload.get('replacement_id', ident)), None)
     if action=='status':
-        present = {r['name'] for r in api(state, '').get('data', {}).get('list', [])}
+        present = listed_services(state)
         print('FIREFLY_FORWARD_ACTIVE' if existing and existing['active'] and set(service_names(existing)) <= present else 'FIREFLY_FORWARD_STOPPED')
         return
     if existing and existing['active']:
         snapshot(existing, MANIFESTS/(ident+'.json'))
     if action=='resume' and existing and existing['active']:
-        present = {r['name'] for r in api(state, '').get('data', {}).get('list', [])}
+        present = listed_services(state)
         if set(service_names(existing)) <= present:
             print('规则已在共享进程运行，无需重启其他规则。\nFIREFLY_FORWARD_ACTIVE')
             return
@@ -480,5 +508,5 @@ if __name__=='__main__':
             main(json.load(sys.stdin))
     except Exception as exc:
         # Exceptions may include API credentials/URLs: emit fixed categories only.
-        print('共享引擎操作失败：'+(str(exc) if isinstance(exc, RuntimeError) else type(exc).__name__), file=sys.stderr)
+        print(failure_message(exc), file=sys.stderr)
         sys.exit(1)
