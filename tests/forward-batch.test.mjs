@@ -1,4 +1,5 @@
 import test from 'node:test';import assert from 'node:assert/strict';import {createForwardBatch} from '../server/forward-batch.mjs';
+import {createApp} from '../server/main.mjs';import {mkdtempSync,rmSync} from 'node:fs';import {tmpdir} from 'node:os';import {join} from 'node:path';
 test('转发批量队列逐条执行，区分安装更新，跳过缺少 SSH，失败后继续',async()=>{
  const jobs=new Map(),started=[],rules=[{id:'a',node_id:'one',name:'A',installed:false},{id:'b',node_id:'one',name:'B',installed:true},{id:'c',node_id:'two',name:'C'},{id:'d',node_id:'one',name:'D'}],base={enabled:1,ssh_host:'host',ssh_password:'sealed',ssh_fingerprint:'trusted'};
  const forwarding={list:()=>rules,action(id,action){assert.equal(action,'start');started.push(id);const job={id,status:'running',log:''};jobs.set(id,job);return job;}};
@@ -11,4 +12,19 @@ test('指定服务器范围、忙时等待，以及主控停止后不继续启�
  const queue=createForwardBatch(forwarding,{busy:()=>busy,status:id=>({id,status:'success',log:'完成'})},()=>['one','two'].map(id=>({id,enabled:1,ssh_host:'host',ssh_password:'sealed',ssh_fingerprint:'trusted'})));
  try{assert.equal(queue.start('one').items.length,1);assert.deepEqual(started,[]);busy=false;await new Promise(r=>setTimeout(r,1100));assert.deepEqual(started,['a']);queue.cancel();assert.equal(queue.view().status,'interrupted');assert.throws(()=>queue.start(),e=>e.status===503);}
  finally{queue.cancel();}
+});
+
+test('批量删除只处理选中规则：草稿无需 SSH、已部署逐条删除、失败与跳过保留',async()=>{
+ const rules=[{id:'draft',node_id:'no-ssh',state:'not_deployed',installed:false},{id:'live',node_id:'ready',installed:true},{id:'skip',node_id:'no-ssh',installed:true},{id:'keep',node_id:'ready',installed:true}],calls=[],jobs=new Map();
+ const f={list:()=>rules,action(id,action){assert.equal(action,'remove');calls.push(id);if(id==='draft'){rules.splice(rules.findIndex(r=>r.id===id),1);return {removed:true};}const job={id,status:'running',log:'删除中'};jobs.set(id,job);return job;}};
+ const nodes=[{id:'ready',enabled:1,ssh_host:'host',ssh_password:'sealed',ssh_fingerprint:'trusted'},{id:'no-ssh',enabled:1}],queue=createForwardBatch(f,{busy:()=>false,status:id=>jobs.get(id)},()=>nodes);
+ try{let batch=queue.start('',null,'remove',['draft','live','skip']);assert.deepEqual(calls,['draft','live']);assert.equal(batch.items.find(i=>i.id==='draft').status,'success');assert.equal(batch.items.find(i=>i.id==='skip').status,'skipped');assert.throws(()=>queue.start('',null,'remove',['keep']),e=>e.status===409);jobs.get('live').status='failed';jobs.get('live').log='远端删除失败';await new Promise(r=>setTimeout(r,1100));batch=queue.view();assert.equal(batch.status,'complete');assert.equal(batch.items.find(i=>i.id==='live').status,'failed');assert.deepEqual(rules.map(r=>r.id),['live','skip','keep']);
+ assert.throws(()=>queue.start('',null,'remove',[]),e=>e.status===400);assert.throws(()=>queue.start('',null,'remove',['keep','keep']),e=>e.status===400);assert.throws(()=>queue.start('',null,'remove',['missing']),e=>e.status===409);assert.throws(()=>queue.start('ready',null,'remove',['skip']),e=>e.status===409);assert.throws(()=>queue.start('',null,'delete-all',null),e=>e.status===400);
+ }finally{queue.cancel();}
+});
+
+test('批量删除接口认证、CSRF 与真实草稿清理，服务器网卡历史不删除',async()=>{
+ const dir=mkdtempSync(join(tmpdir(),'delete-batch-api-')),app=await createApp({password:'delete-batch-fixture',dbPath:join(dir,'db.sqlite'),disableExternal:true,disableTelegram:true});await new Promise(r=>app.server.listen(0,'127.0.0.1',r));const base='http://127.0.0.1:'+app.server.address().port,headers={'Content-Type':'application/json'},call=(path,method='GET',body)=>fetch(base+path,{method,headers,body:body===undefined?undefined:JSON.stringify(body)});
+ try{assert.equal((await call('/api/forwarding/batch','POST',{action:'remove',rule_ids:['id']})).status,401);const login=await call('/admin/api/login','POST',{username:'admin',password:'delete-batch-fixture'}),session=await login.json();headers.Cookie=login.headers.get('set-cookie').split(';')[0];assert.equal((await call('/api/forwarding/batch','POST',{action:'remove',rule_ids:['id']})).status,403);headers['X-CSRF-Token']=session.csrf;const n=await(await call('/api/nodes','POST',{name:'删除测试'})).json();app.db.prepare("UPDATE nodes SET ssh_host='192.0.2.1',ssh_password='sealed',ssh_fingerprint='trusted' WHERE id=?").run(n.id);const rule=await(await call('/api/forwarding','POST',{node_id:n.id,name:'草稿',protocol:'tcp',listen_port:12345,target_host:'192.0.2.1',target_port:443})).json();app.db.prepare("UPDATE nodes SET ssh_host='',ssh_password='',ssh_fingerprint='' WHERE id=?").run(n.id);const result=await call('/api/forwarding/batch','POST',{action:'remove',node_id:n.id,rule_ids:[rule.id]});assert.equal(result.status,202);const batch=await result.json();assert.equal(batch.status,'complete');assert.equal(batch.items[0].status,'success');assert.equal((await(await call('/api/forwarding')).json()).rules.length,0);assert.equal((await(await call('/api/nodes')).json()).nodes.length,1);
+ }finally{await app.close();rmSync(dir,{recursive:true,force:true});}
 });

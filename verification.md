@@ -388,3 +388,9 @@ Installer locale hotfix: braced variables adjacent to Chinese punctuation in tim
 - Python 共享引擎 16 项测试通过。本地 HTTP 服务改为在没有服务时返回真实的 count:0/list:null，覆盖全部停止后检查状态、幂等清理、逐条重新安装 / 更新；最终四个协议服务均存在。
 - 覆盖空列表 / 数组格式、异常格式 / 数量不符 / 重复名称拒绝，以及从空列表首次安装失败后的恢复，确认保留原 HTTPError 而非被清理过程 TypeError 覆盖。异常位置与 HTTP 状态可读，凭据样本不回显。
 - 132 项 Node 测试通过（包括下发脚本 shell 语法）。本地没有生产 VPS 访问，未推送 GitHub，未运行 Linux 真实 GOST / systemd / OpenRC。需上传后等待 CI 通过，再在线重试确认是否存在其他原始失败原因。
+
+## v0.2.53 · 2026-11-09
+
+- 134 项 Node 测试通过。新增批量删除选中范围、串行任务 / 互斥、草稿无 SSH、失败与跳过保留、未知 / 重复 / 跨范围 ID 拒绝，以及新操作的认证 / CSRF、真实 SQLite 草稿删除与服务器节点保留。
+- Chrome 使用本地真实主控 API / SQLite 通过默认不选、全选 / 清空、仅选中删除、完成进度、未选规则保留、安装窗口标题切回、手机窄屏 / 深色布局；实际只删除测试草稿，无生产 SSH。work/browser-0253.mjs，测试截图 outputs/批量删除-v0.2.53.png。
+- 远端删除沿用已有单条删除控制器，未改 GOST Python 执行器或采集端（仍 0.2.6）。未推送 GitHub、未连接生产；Linux 真实服务删除仍需 CI 和用户实际确认。
