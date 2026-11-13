@@ -427,3 +427,11 @@ Installer locale hotfix: braced variables adjacent to Chinese punctuation in tim
 - 安装器迁移测试通过，验证首日基线承接主控当天数据、重装不重置、旧身份冲突拒绝和失败回滚。Go test ./... / go vet ./... 通过：首日增量去重、持久化重载、上海跨日、重启 / 计数重置、身份和溢出拒绝。
 - amd64 / arm64 Linux 静态采集端 0.2.7 已构建并更新 SHA256SUMS。Bash 语法、ShellCheck 及 Chrome 真实本地主控 API / SQLite 界面验证通过，包含配置保存、手动恢复、状态刷新、手机 / 深色；截图 outputs/流量暂停-v0.2.56.png，工作脚本 work/browser-0256.mjs。
 - 本机 Windows 无 Docker / systemd / OpenRC，Linux 真实停止与 Alpine 安装仍需 GitHub CI；Alpine 集成用例现要求首个有效上海当天样本。浏览器恢复使用无远端规则测试状态，不连接生产。未上传 GitHub；原永久命令的 Release 查询失败未在此版本修改。
+
+## v0.2.57 · 2026-11-13
+
+- 142 项 Node 测试通过。Python 转发引擎24项测试通过：新增日志级别 / 输出 / 容量保留策略、旧引擎单次升级、所有活动规则快照与停止状态保留、同一操作内快照时间单调、重复操作不重启、无效指标 / 未知服务 / 节点身份不匹配拒绝，以及启动失败恢复旧配置后重试。
+- 升级最终快照只读取一次 Metrics，完整校验全部清单和有界流式响应后再重启，不为每条规则重复下载指标，也不保留完整大响应。正常转发安装仍沿用既有 SSH 归属核验 / 串行队列 / 最终样本入库。
+- Linux 真实 GOST 测试增加旧日志策略升级、进程PID仅首次改变、warn/error专用文件、实际失败连接日志和1 MB测试限额触发轮转，继续验证TCP / UDP与计数及规则隔离。本机尝试官方Windows测试包时被安全软件拦截，未绕过或关闭防护，未运行该二进制；实际GOST轮转仍需GitHub Linux CI确认。本机未连接生产 / 推送GitHub。
+
+- 最终全量Node再次142项通过（work/test-0257-final.log）；work/check-0257.mjs记录Python24项引擎 + 6项诊断及8项Node转发相关检查通过。Chrome本地真实主控验证单条更新确认、批量安装说明及编辑窗口均提示首次日志保护的同机中断；未提交部署，未连接生产，工作脚本work/browser-0257.mjs。

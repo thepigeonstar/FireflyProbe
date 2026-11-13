@@ -42,7 +42,9 @@ def port():
     with socket.socket() as sock:sock.bind(('127.0.0.1',0));return sock.getsockname()[1]
 processes={};logs=[]
 with tempfile.TemporaryDirectory() as directory:
-    root=pathlib.Path(directory);engine.ROOT=root/'engine';engine.MANIFESTS=root/'manifests';engine.BACKUPS=root/'backups';engine.ROOT.mkdir();engine.MANIFESTS.mkdir()
+    root=pathlib.Path(directory);engine.ROOT=root/'engine';engine.MANIFESTS=root/'manifests';engine.BACKUPS=root/'backups';engine.LOGS=root/'logs';engine.ROOT.mkdir();engine.MANIFESTS.mkdir()
+    engine.LOG_MAX_SIZE=1 # Exercise actual GOST rotation with a small test-only limit.
+    engine.prepare_log_directory();(engine.LOGS/'engine.log').write_bytes(b'x'*(1024*1024))
     rules=[dict(id=str(uuid.uuid4()),protocol=p,listen_port=port(),target_host='127.0.0.1',target_port=target,installed=True,state='stopped' if i==2 else 'running') for i,p in enumerate(['tcp','both','udp'])]
     by_id={r['id']:r for r in rules};owner=str(uuid.uuid4())
     def manager(action,unit=engine.UNIT):
@@ -87,13 +89,44 @@ with tempfile.TemporaryDirectory() as directory:
         raise RuntimeError('TCP forwarding not ready')
     payload=lambda action,**extra:dict(owner=owner,rules=list(by_id.values()),action=action,**extra)
     try:
-        with patch.object(engine,'manager',side_effect=manager),patch.object(engine,'install_unit'):
+        with patch.object(engine,'manager',side_effect=manager),patch.object(engine,'install_unit',side_effect=engine.prepare_log_directory):
             for r in rules:
                 manager('start','firefly-forward-'+r['id'])
                 if r['state']=='stopped':manager('stop','firefly-forward-'+r['id'])
             probe(rules[0]);probe(rules[1]);engine.execute(payload('resume',id=rules[0]['id'],ensure_shared=True))
             assert sum(p.poll() is None for p in processes.values())==1
             state=engine.read(engine.ROOT/'state.json');pid=processes[engine.UNIT].pid
+            # Existing old logging configuration is upgraded once, preserving every service.
+            state.pop('log_policy');engine.persist(state)
+            old_epoch=state['process_epoch'];old_rules=state['rules'].copy()
+            with contextlib.redirect_stdout(io.StringIO()) as upgrade_output:engine.execute(payload('resume',id=rules[0]['id']))
+            state=engine.read(engine.ROOT/'state.json')
+            assert state['log_policy']==engine.LOG_POLICY_VERSION
+            assert {i:{k:v for k,v in r.items() if k!='last_sampled'} for i,r in state['rules'].items()}==old_rules
+            assert state['process_epoch']!=old_epoch and processes[engine.UNIT].pid!=pid
+            assert len([s for s in upgrade_output.getvalue().splitlines() if s.startswith('FIREFLY_FINAL ')])>=2
+            pid=processes[engine.UNIT].pid
+            engine.execute(payload('resume',id=rules[0]['id']));assert processes[engine.UNIT].pid==pid
+            # Successful connections stay out of the log, while a real dial error remains visible.
+            failed_target=socket.socket();failed_target.bind(('127.0.0.1',0))
+            error_rule={**rules[0],'id':str(uuid.uuid4()),'listen_port':port(),'target_port':failed_target.getsockname()[1]}
+            by_id[error_rule['id']]=error_rule;engine.execute(payload('start',id=error_rule['id']))
+            try:
+                with socket.create_connection(('127.0.0.1',error_rule['listen_port']),timeout=2) as c:
+                    c.sendall(b'expected-dial-error')
+                    try:c.recv(32)
+                    except OSError:pass
+                for _ in range(50):
+                    content=(engine.LOGS/'engine.log').read_bytes()
+                    if content.startswith(b'{') and list(engine.LOGS.glob('engine-*.log*')):break
+                    time.sleep(.1)
+                else:raise AssertionError('GOST warning/error file rotation did not occur')
+                entries=[json.loads(s) for s in content.splitlines()]
+                assert entries and all(s['level'] in ('warn','error','fatal') for s in entries)
+                assert len(content)<1024*1024 and len(list(engine.LOGS.glob('engine-*.log*')))<=3
+                assert any(s.get('service') in engine.service_names(engine.read(engine.ROOT/'state.json')['rules'][error_rule['id']]) for s in entries)
+            finally:
+                failed_target.close();engine.execute(payload('remove',id=error_rule['id']));by_id.pop(error_rule['id'])
             probe(rules[0],100);probe(rules[1],1000)
             with socket.socket(socket.AF_INET,socket.SOCK_DGRAM) as conn:
                 conn.settimeout(5);conn.sendto(b'udp-check',('127.0.0.1',rules[1]['listen_port']));assert conn.recvfrom(4096)[0]==b'udp-check'
@@ -132,7 +165,7 @@ with tempfile.TemporaryDirectory() as directory:
             assert sum(p.poll() is None for p in processes.values())==1
             for rule in list(by_id.values()):engine.execute(payload('remove',id=rule['id']))
             assert not (engine.ROOT/'state.json').exists()
-            print('Real GOST shared engine: migration, one process, TCP/UDP, service counters, stop/resume/edit isolation, occupied-port rollback and legacy return passed.')
+            print('Real GOST shared engine: migration, bounded warn/error logging and rotation, old policy upgrade, one process, TCP/UDP, service counters, stop/resume/edit isolation, occupied-port rollback and legacy return passed.')
     except Exception:
         for log in logs:
             log.seek(0);print(log.read().decode(errors='replace'),file=sys.stderr)

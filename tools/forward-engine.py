@@ -29,6 +29,9 @@ SERVICE = re.compile(r'(?:^|,)\s*service="((?:\\.|[^"\\])*)"(?:,|$)')
 METRICS_LIMIT = 64*1024*1024
 METRICS_LINE_LIMIT = 64*1024
 METRICS_TIMEOUT = 15
+LOGS = pathlib.Path('/var/log/firefly-forward')
+LOG_POLICY_VERSION = 1
+LOG_MAX_SIZE = 25
 
 
 def write(path, value):
@@ -116,7 +119,10 @@ def services(rule):
 
 
 def config(state):
-    return {'services': [s for r in state['rules'].values() if r['active'] for s in services(r)], 'api': {'addr': '127.0.0.1:'+str(state['api_port']), 'auth': {'username': 'firefly', 'password': state['password']}}, 'metrics': {'addr': '127.0.0.1:'+str(state['metrics_port'])}}
+    result = {'services': [s for r in state['rules'].values() if r['active'] for s in services(r)], 'api': {'addr': '127.0.0.1:'+str(state['api_port']), 'auth': {'username': 'firefly', 'password': state['password']}}, 'metrics': {'addr': '127.0.0.1:'+str(state['metrics_port'])}}
+    if state.get('log_policy') == LOG_POLICY_VERSION:
+        result['log'] = {'level': 'warn', 'format': 'json', 'output': str(LOGS/'engine.log'), 'rotation': {'maxSize': LOG_MAX_SIZE, 'maxAge': 7, 'maxBackups': 3, 'compress': True}}
+    return result
 
 
 def api(state, path, method='GET', value=None):
@@ -194,17 +200,24 @@ def manager(action, unit=UNIT):
         raise RuntimeError('系统服务操作失败：'+action)
 
 
+def prepare_log_directory():
+    LOGS.mkdir(mode=0o700, parents=True, exist_ok=True)
+    LOGS.chmod(0o700)
+
+
 def install_unit():
+    prepare_log_directory()
     wrapper = pathlib.Path('/opt/firefly-forward/run-engine.sh')
     wrapper.write_text('#!/bin/sh\nset -eu\numask 077\nexec python3 '+HELPER+' boot\n', encoding='utf-8')
     wrapper.chmod(0o755)
     if shutil.which('systemctl'):
-        pathlib.Path('/etc/systemd/system/'+UNIT+'.service').write_text('[Unit]\nDescription=Firefly shared GOST engine\nAfter=network-online.target\nWants=network-online.target\n[Service]\nExecStart='+str(wrapper)+'\nRestart=on-failure\nRestartSec=5\nNoNewPrivileges=true\nPrivateTmp=true\nProtectSystem=strict\nProtectHome=true\nReadWritePaths=/etc/firefly-forward /etc/firefly-forward-engine\n[Install]\nWantedBy=multi-user.target\n', encoding='utf-8')
+        pathlib.Path('/etc/systemd/system/'+UNIT+'.service').write_text('[Unit]\nDescription=Firefly shared GOST engine\nAfter=network-online.target\nWants=network-online.target\n[Service]\nExecStart='+str(wrapper)+'\nRestart=on-failure\nRestartSec=5\nNoNewPrivileges=true\nPrivateTmp=true\nProtectSystem=strict\nProtectHome=true\nReadWritePaths=/etc/firefly-forward /etc/firefly-forward-engine '+str(LOGS)+'\n[Install]\nWantedBy=multi-user.target\n', encoding='utf-8')
         subprocess.run(['systemctl', 'daemon-reload'], check=True)
     else:
         unit = pathlib.Path('/etc/init.d/'+UNIT)
         unit.write_text('#!/sbin/openrc-run\ndescription="Firefly shared GOST engine"\ncommand="'+str(wrapper)+'"\nsupervisor="supervise-daemon"\nrespawn_delay=5\nrespawn_max=0\ndepend() { need net; }\n', encoding='utf-8')
         unit.chmod(0o755)
+    print('已配置转发日志保护：仅警告和错误，单文件 25 MB、最多 3 份备份、保留 7 天。', flush=True)
 
 
 def wait_ready():
@@ -288,6 +301,84 @@ def delete_services(state, rule):
             api(state, '/'+name, 'DELETE')
 
 
+def logging_snapshot(state, payload):
+    """Pair all active manifests with one bounded Metrics read before a process restart."""
+    active = [r for r in state['rules'].values() if r['active']]
+    paths = {r['id']: MANIFESTS/(r['id']+'.json') for r in active}
+    manifests = {ident: read(path) for ident, path in paths.items()}
+    names, totals = {}, {r['id']: dict(rx=0, tx=0, errors=0) for r in active}
+    for r in active:
+        m = manifests[r['id']]
+        if m.get('port') != state['metrics_port'] or set(m.get('services', [])) != set(service_names(r)):
+            raise RuntimeError('日志保护升级前统计清单不一致，未重启引擎')
+        for name in service_names(r):
+            names[name] = r['id']
+    if listed_services(state) != set(names):
+        raise RuntimeError('日志保护升级前运行规则与配置不一致，未重启引擎')
+    if not active:
+        return []
+    marker = False
+    for line in metrics_lines(state['metrics_port']):
+        marker = marker or 'gost_services' in line
+        match = METRIC.fullmatch(line)
+        if not match:
+            continue
+        label = SERVICE.search(match.group(2) or '')
+        ident = names.get(json.loads('"'+label.group(1)+'"')) if label else None
+        if ident is None:
+            continue
+        value = float(match.group(3))
+        if not math.isfinite(value) or not 0 <= value <= 8e15:
+            raise RuntimeError('日志保护升级前 Metrics 计数无效，未重启引擎')
+        field = 'rx' if 'input_bytes' in match.group(1) else 'tx' if 'output_bytes' in match.group(1) else 'errors'
+        totals[ident][field] += int(value)
+        if totals[ident][field] > 8e15:
+            raise RuntimeError('日志保护升级前 Metrics 累计计数无效，未重启引擎')
+    if not marker or any(read(path) != manifests[ident] for ident, path in paths.items()):
+        raise RuntimeError('日志保护升级前采样不完整或清单变化，未重启引擎')
+    reported = {r['id']: r.get('last_sampled', 0) for r in payload['rules']}
+    return [dict(id=r['id'], epoch=manifests[r['id']]['epoch'], sampled=max(int(time.time()), reported.get(r['id'], 0)+1, r.get('last_sampled', 0)+1), available=True, **totals[r['id']]) for r in active]
+
+
+def ensure_log_policy(state, payload):
+    if state.get('log_policy') == LOG_POLICY_VERSION:
+        return state
+    samples = logging_snapshot(state, payload)
+    backup = BACKUPS/('log-policy-'+time.strftime('%Y%m%d-%H%M%S')+'-'+uuid.uuid4().hex[:8])
+    backup.mkdir(mode=0o700, parents=True)
+    write(backup/'state.json', state)
+    write(backup/'config.json', read(ROOT/'config.json'))
+    install_unit()
+    print('正在启用转发日志保护：将重启本机共享引擎一次，连接会短暂中断。', flush=True)
+    for sample in samples:
+        print('FIREFLY_FINAL '+json.dumps(sample, separators=(',', ':')), flush=True)
+    previous, stopped = copy.deepcopy(state), False
+    try:
+        manager('stop')
+        stopped = True
+        state['log_policy'] = LOG_POLICY_VERSION
+        for sample in samples:
+            state['rules'][sample['id']]['last_sampled'] = sample['sampled']
+        persist(state)
+        manager('start')
+        state = wait_ready()
+        expected = {name for r in state['rules'].values() if r['active'] for name in service_names(r)}
+        if listed_services(state) != expected:
+            raise RuntimeError('日志保护升级后运行规则核对失败')
+    except Exception:
+        if stopped:
+            try:
+                manager('stop')
+                persist(previous)
+                manager('start')
+                wait_ready()
+            except Exception:
+                raise RuntimeError('日志保护升级失败且原引擎未能恢复，请检查系统服务；备份：'+str(backup)) from None
+        raise RuntimeError('日志保护升级失败，原配置已保留或恢复；请核对服务后重试。') from None
+    print('转发日志保护已启用：仅警告和错误；单文件 25 MB，最多 3 份备份，保留 7 天。', flush=True)
+    return state
+
+
 def migrate(payload):
     state_file = ROOT/'state.json'
     previous = read(state_file) if state_file.exists() else None
@@ -325,7 +416,7 @@ def migrate(payload):
     write(backup/'legacy.json', saved)
     excluded = {r['listen_port'] for r in payload['rules']}
     api_port = choose_port(excluded)
-    state = {'owner': payload['owner'], 'mode': 'migrating', 'api_port': api_port, 'metrics_port': choose_port(excluded|{api_port}), 'password': secrets.token_hex(32), 'process_epoch': str(uuid.uuid4()), 'rules': {}}
+    state = {'owner': payload['owner'], 'mode': 'migrating', 'api_port': api_port, 'metrics_port': choose_port(excluded|{api_port}), 'password': secrets.token_hex(32), 'process_epoch': str(uuid.uuid4()), 'rules': {}, 'log_policy': LOG_POLICY_VERSION}
     def stop_legacy(rule):
         saved['samples'][rule['id']] = snapshot(rule, MANIFESTS/(rule['id']+'.json'))
         write(journal, saved)
@@ -383,6 +474,8 @@ def apply(payload):
     if not manager('status'):
         manager('start')
     state = wait_ready()
+    if payload['action'] in ('start', 'resume', 'edit'):
+        state = ensure_log_policy(state, payload)
     old = copy.deepcopy(state)
     ident, action = payload['id'], payload['action']
     existing = state['rules'].get(ident)
@@ -509,7 +602,7 @@ def initialize_empty_remote(payload):
     api_port = choose_port(excluded)
     state = dict(owner=payload['owner'], mode='shared', api_port=api_port,
                  metrics_port=choose_port(excluded|{api_port}), password=secrets.token_hex(32),
-                 process_epoch=str(uuid.uuid4()), rules={})
+                 process_epoch=str(uuid.uuid4()), rules={}, log_policy=LOG_POLICY_VERSION)
     # Keep old IDs available, but never restart every saved rule after reinstall.
     for r in payload['rules']:
         if r.get('installed'):

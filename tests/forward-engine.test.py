@@ -22,7 +22,7 @@ class EngineTest(unittest.TestCase):
     def setUp(self):
         self.directory = tempfile.TemporaryDirectory()
         root = pathlib.Path(self.directory.name)
-        engine.ROOT, engine.MANIFESTS, engine.BACKUPS = root/'engine', root/'manifests', root/'backups'
+        engine.ROOT, engine.MANIFESTS, engine.BACKUPS, engine.LOGS = root/'engine', root/'manifests', root/'backups', root/'logs'
         engine.ROOT.mkdir(); engine.MANIFESTS.mkdir()
         self.owner = str(uuid.uuid4())
         self.rules = [dict(id=str(uuid.uuid4()), protocol=p, listen_port=10000+i, target_host='127.0.0.1', target_port=8080, installed=True, state='stopped' if i==2 else 'running') for i,p in enumerate(['tcp','both','udp'])]
@@ -122,6 +122,72 @@ class EngineTest(unittest.TestCase):
         engine.migrate(self.payload('migrate'));self.running[engine.UNIT]=False;self.calls.clear()
         engine.apply(self.payload('status',id=self.rules[0]['id']))
         self.assertNotIn(('start',engine.UNIT),self.calls)
+
+    def old_logging_state(self):
+        engine.migrate(self.payload('migrate'))
+        state=engine.read(engine.ROOT/'state.json');state.pop('log_policy');engine.persist(state)
+        self.calls.clear();self.output.truncate(0);self.output.seek(0)
+        return state
+
+    def test_new_engine_logging_is_bounded_and_rule_independent(self):
+        engine.migrate(self.payload('migrate'))
+        state=engine.read(engine.ROOT/'state.json');value=engine.config(state)
+        self.assertEqual(value['log'],dict(level='warn',format='json',output=str(engine.LOGS/'engine.log'),rotation=dict(maxSize=25,maxAge=7,maxBackups=3,compress=True)))
+        self.assertEqual(engine.read(engine.ROOT/'config.json')['log'],value['log'])
+        self.assertTrue(all('logger' not in s for s in value['services']))
+        self.calls.clear();engine.apply(self.payload('resume',id=self.rules[0]['id']))
+        self.assertFalse(any(c==('stop',engine.UNIT) for c in self.calls))
+
+    def test_old_engine_logging_upgrade_snapshots_all_rules_once_and_preserves_stopped(self):
+        previous=self.old_logging_state();a=self.rules[0]
+        old_manifests={ident:engine.read(engine.MANIFESTS/(ident+'.json')) for ident in previous['rules']}
+        with patch.object(engine,'metrics_lines',wraps=engine.metrics_lines) as metrics:
+            engine.apply(self.payload('resume',id=a['id']))
+        self.assertEqual(metrics.call_count,2) # one whole-engine snapshot, then the selected rule's normal snapshot
+        state=engine.read(engine.ROOT/'state.json')
+        self.assertEqual(state['log_policy'],engine.LOG_POLICY_VERSION)
+        self.assertEqual({i:{k:v for k,v in r.items() if k!='last_sampled'} for i,r in state['rules'].items()},previous['rules'])
+        self.assertEqual(self.calls.count(('stop',engine.UNIT)),1)
+        self.assertEqual(self.calls.count(('start',engine.UNIT)),1)
+        samples=[json.loads(line.removeprefix('FIREFLY_FINAL ')) for line in self.output.getvalue().splitlines() if line.startswith('FIREFLY_FINAL ')]
+        before=[s for s in samples if s['epoch']==old_manifests[s['id']]['epoch']]
+        self.assertEqual({s['id'] for s in before},{r['id'] for r in previous['rules'].values() if r['active']})
+        current=[s for s in samples if s['id']==a['id'] and s['epoch']!=old_manifests[a['id']]['epoch']]
+        self.assertGreater(current[0]['sampled'],next(s['sampled'] for s in before if s['id']==a['id']))
+        for ident,r in state['rules'].items():
+            self.assertNotEqual(engine.read(engine.MANIFESTS/(ident+'.json'))['epoch'],old_manifests[ident]['epoch'])
+            self.assertEqual(r['active'],previous['rules'][ident]['active'])
+        self.assertTrue(list(engine.BACKUPS.glob('log-policy-*/state.json')))
+        self.calls.clear();engine.apply(self.payload('resume',id=a['id']))
+        self.assertNotIn(('stop',engine.UNIT),self.calls)
+
+    def test_logging_upgrade_invalid_metrics_unknown_services_or_owner_do_not_restart(self):
+        previous=self.old_logging_state();a=self.rules[0]
+        self.metrics_body=b'gost_services 3\n'+('gost_service_transfer_input_bytes_total{service="%s"} NaN\n'%engine.service_names(previous['rules'][a['id']])[0]).encode()
+        with self.assertRaisesRegex(RuntimeError,'计数无效'):engine.apply(self.payload('resume',id=a['id']))
+        self.assertNotIn(('stop',engine.UNIT),self.calls)
+        self.assertEqual(engine.read(engine.ROOT/'state.json'),previous)
+        self.metrics_body=None;self.listed['unowned']={'name':'unowned'}
+        with self.assertRaisesRegex(RuntimeError,'运行规则'):engine.apply(self.payload('start',id=a['id']))
+        self.assertNotIn(('stop',engine.UNIT),self.calls)
+        payload=self.payload('start',id=a['id']);payload['owner']=str(uuid.uuid4())
+        with self.assertRaisesRegex(RuntimeError,'不一致'):engine.apply(payload)
+        self.assertNotIn(('stop',engine.UNIT),self.calls)
+
+    def test_failed_logging_upgrade_restores_previous_configuration(self):
+        previous=self.old_logging_state();real=self.manager;attempts=[]
+        def fail_first_start(action,unit=engine.UNIT):
+            if action=='start' and unit==engine.UNIT:
+                attempts.append(action)
+                if len(attempts)==1:raise RuntimeError('fixture start failure')
+            return real(action,unit)
+        with patch.object(engine,'manager',side_effect=fail_first_start):
+            with self.assertRaisesRegex(RuntimeError,'原配置已保留或恢复'):engine.apply(self.payload('start',id=self.rules[0]['id']))
+        state=engine.read(engine.ROOT/'state.json')
+        self.assertNotIn('log_policy',state);self.assertNotIn('log',engine.read(engine.ROOT/'config.json'))
+        self.assertEqual(state['rules'],previous['rules']);self.assertTrue(self.running[engine.UNIT])
+        engine.apply(self.payload('resume',id=self.rules[0]['id']))
+        self.assertEqual(engine.read(engine.ROOT/'state.json')['log_policy'],engine.LOG_POLICY_VERSION)
 
     def test_automatic_migration_then_action_and_reuse(self):
         a,b=self.rules[:2]
