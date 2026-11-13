@@ -1,4 +1,5 @@
 import ssh2 from 'ssh2';
+import {sshCredentialFields,sshAuthOptions,hasSSHCredentials,sshRedactor} from './ssh-auth.mjs';
 const { Client }=ssh2;
 import { createCipheriv, createDecipheriv, randomBytes, createHash, randomUUID } from 'node:crypto';
 import { readFileSync, writeFileSync, chmodSync } from 'node:fs';
@@ -19,7 +20,7 @@ export function vaultFromKey(key){
   if(!Buffer.isBuffer(key)||key.length!==32)throw new Error('凭据密钥无效');
   return {
     seal(value,id){const iv=randomBytes(12),cipher=createCipheriv('aes-256-gcm',key,iv);cipher.setAAD(Buffer.from(id));const body=Buffer.concat([cipher.update(value,'utf8'),cipher.final()]);return Buffer.concat([iv,cipher.getAuthTag(),body]).toString('base64');},
-    open(value,id){try{const blob=Buffer.from(value,'base64'),cipher=createDecipheriv('aes-256-gcm',key,blob.subarray(0,12));cipher.setAAD(Buffer.from(id));cipher.setAuthTag(blob.subarray(12,28));return Buffer.concat([cipher.update(blob.subarray(28)),cipher.final()]).toString('utf8');}catch{throw error(409,'SSH 凭据无法解密，请重新填写密码；迁移主控时需同时迁移 ssh-secret.key');}}
+    open(value,id){try{const blob=Buffer.from(value,'base64'),cipher=createDecipheriv('aes-256-gcm',key,blob.subarray(0,12));cipher.setAAD(Buffer.from(id));cipher.setAuthTag(blob.subarray(12,28));return Buffer.concat([cipher.update(blob.subarray(28)),cipher.final()]).toString('utf8');}catch{throw error(409,'SSH 凭据无法解密，请重新填写 SSH 凭据；迁移主控时需同时迁移 ssh-secret.key');}}
   };
 }
 export function sshFields(input,old={}) {
@@ -38,17 +39,18 @@ export function createSSH({db,vault,publicURL,bootstrap,ClientClass=Client}) {
   const drafts=new Map(),jobs=new Map(),probes=new Map(),connections=new Set(),moving=new Set(),moveProofs=new Map();let stopped=false;
   const node=id=>{const n=db.prepare('SELECT * FROM nodes WHERE id=?').get(id);if(!n)throw error(404,'服务器不存在');return n;};
   const config=n=>{if(!n.ssh_host)throw error(400,'请先保存服务器 IP 或域名及 SSH 配置');return {host:n.ssh_host,port:n.ssh_port,username:n.ssh_user,readyTimeout:15000,keepaliveInterval:10000,keepaliveCountMax:3};};
-  const friendly=e=>/authentication/i.test(e.message)?'SSH 登录失败，请检查用户名、密码和服务器密码登录设置':/host|fingerprint/i.test(e.message)?'SSH 指纹不匹配，请重新测试并核对服务器身份':/timed out|timeout/i.test(e.message)?'SSH 连接或部署超时，请检查网络、防火墙和 SSH 端口':/ECONNREFUSED/.test(e.message)?'SSH 端口拒绝连接':/ENETUNREACH|EHOSTUNREACH/.test(e.message)?'主控无法访问该服务器':'SSH 操作失败，请检查服务器 SSH 服务与网络';
+  const friendly=e=>/authentication/i.test(e.message)?'SSH 登录失败，请检查用户名、认证凭据和服务器 SSH 登录设置':/host|fingerprint/i.test(e.message)?'SSH 指纹不匹配，请重新测试并核对服务器身份':/timed out|timeout/i.test(e.message)?'SSH 连接或部署超时，请检查网络、防火墙和 SSH 端口':/ECONNREFUSED/.test(e.message)?'SSH 端口拒绝连接':/ENETUNREACH|EHOSTUNREACH/.test(e.message)?'主控无法访问该服务器':'SSH 操作失败，请检查服务器 SSH 服务与网络';
   function connect(n,scan=false){return new Promise((resolve,reject)=>{
     if(stopped)return reject(error(503,'SSH 服务正在停止'));
     if(connections.size>=4)return reject(error(429,'SSH 操作较多，请稍后重试'));
+    let options;try{options={...config(n),...(scan?{}:sshAuthOptions(n,vault))};}catch(e){return reject(e);}
     let captured='',done=false;
     const c=new ClientClass(),finish=(err,value)=>{if(done)return;done=true;clearTimeout(timer);if(scan||err)c.destroy();err?reject(err):resolve(value);};
     const timer=setTimeout(()=>finish(error(504,'SSH 连接超时')),18000);timer.unref();connections.add(c);
     c.on('close',()=>{connections.delete(c);if(!done)finish(error(502,'SSH 连接已断开'));});
     c.on('error',e=>{if(scan&&captured)finish(null,captured);else finish(error(502,friendly(e)));});
     c.on('ready',()=>finish(null,c));
-    try{c.connect({...config(n),password:scan?'':vault.open(n.ssh_password,n.id),hostVerifier:key=>{captured=fingerprint(key);if(scan){finish(null,captured);return false;}return captured===n.ssh_fingerprint;}});}catch(e){finish(e.status?e:error(502,friendly(e)));}
+    try{c.connect({...options,hostVerifier:key=>{captured=fingerprint(key);if(scan){finish(null,captured);return false;}return captured===n.ssh_fingerprint;}});}catch(e){finish(e.status?e:error(502,friendly(e)));}
   });}
   function exec(c,command,input='',timeout=30000,onLine=()=>{}){return new Promise((resolve,reject)=>{
     let done=false,partial='';const finish=(e,code)=>{if(done)return;done=true;clearTimeout(timer);if(e)c.destroy();e?reject(e):resolve(code);};
@@ -59,8 +61,8 @@ export function createSSH({db,vault,publicURL,bootstrap,ClientClass=Client}) {
   });}
   const status=id=>{const job=jobs.get(id);if(!job)throw error(404,'部署任务不存在');return {...job};};
   const busy=id=>moving.has(id)||[...jobs.values()].some(j=>j.node_id===id&&j.status==='running');
-  const moveSignature=n=>JSON.stringify([n.id,n.ssh_host,n.ssh_port,n.ssh_user,n.ssh_fingerprint,n.ssh_password,n.token_hash]);
-  const passwordHash=value=>createHash('sha256').update(value).digest('hex');
+  const moveSignature=n=>JSON.stringify([n.id,n.ssh_host,n.ssh_port,n.ssh_user,n.ssh_fingerprint,n.ssh_auth_mode,n.ssh_password,n.ssh_private_key,n.ssh_passphrase,n.token_hash]);
+  const authHash=n=>createHash('sha256').update(JSON.stringify(sshAuthOptions(n,vault))).digest('hex');
   async function verifyIdentity(c,login,old,requireToken=false){
       const proof=Buffer.from(JSON.stringify({id:old.id,hash:old.token_hash,require_token:requireToken})).toString('base64');
       const script=`set -eu\nexport PYTHONUTF8=1 PYTHONIOENCODING=utf-8\npython3 - <<'FIREFLY_VERIFY_MOVE'\nimport base64, hashlib, json, pathlib\nexpected=json.loads(base64.b64decode('${proof}'))\nmatched=False\nstate=pathlib.Path('/etc/firefly-forward-engine/state.json')\nif state.exists():\n try:\n  matched=json.loads(state.read_text()).get('owner')==expected['id']\n except (OSError,ValueError): pass\nelse:\n for name in ['/etc/firefly-probe-agent.json','/etc/lightprobe-agent.json']:\n  try:\n   token=json.loads(pathlib.Path(name).read_text()).get('token','')\n   if token and hashlib.sha256(token.encode()).hexdigest()==expected['hash']: matched=True\n  except (OSError,ValueError): pass\nif expected.get('require_token'):\n token_match=False\n for name in ['/etc/firefly-probe-agent.json','/etc/lightprobe-agent.json']:\n  try:\n   token=json.loads(pathlib.Path(name).read_text()).get('token','')\n   if token and hashlib.sha256(token.encode()).hexdigest()==expected['hash']: token_match=True\n  except (OSError,ValueError): pass\n matched=matched and token_match\nif not matched: raise SystemExit(3)\nprint('FIREFLY_SAME_MACHINE')\nFIREFLY_VERIFY_MOVE\n`;
@@ -70,12 +72,12 @@ export function createSSH({db,vault,publicURL,bootstrap,ClientClass=Client}) {
     busy,
     async verifyMove(id,input,owner){
       const old=node(id);if(busy(id))throw error(409,'该服务器有任务正在执行');
-      if(!old.ssh_fingerprint||!old.ssh_password||input.ssh_clear)throw error(409,'保留转发规则换址需要原 SSH 指纹与密码，不能同时清除密码');
+      if(!old.ssh_fingerprint||!hasSSHCredentials(old)||input.ssh_clear)throw error(409,'保留转发规则换址需要原 SSH 指纹与凭据，不能同时清除凭据');
       const fields=sshFields(input,old);
-      if(input.ssh_password!==undefined&&(typeof input.ssh_password!=='string'||input.ssh_password.length>1024||input.ssh_password.includes('\0')))throw error(400,'SSH 密码格式无效');
-      const next={...old,...fields,ssh_password:input.ssh_password?vault.seal(input.ssh_password,id):old.ssh_password};
+
+      const next={...old,...fields,...sshCredentialFields(input,old,vault,id)};
       if(input.ssh_move_proof){
-        const proof=moveProofs.get(input.ssh_move_proof);if(!proof||proof.owner!==owner||proof.node_id!==id||Date.now()-proof.time>120000||proof.signature!==moveSignature(old)||JSON.stringify(fields)!==JSON.stringify(proof.fields)||passwordHash(vault.open(next.ssh_password,id))!==proof.password)throw error(409,'新指纹核验已过期或 SSH 配置已变化，请重新测试 SSH');
+        const proof=moveProofs.get(input.ssh_move_proof);if(!proof||proof.owner!==owner||proof.node_id!==id||Date.now()-proof.time>120000||proof.signature!==moveSignature(old)||JSON.stringify(fields)!==JSON.stringify(proof.fields)||authHash(next)!==proof.password)throw error(409,'新指纹核验已过期或 SSH 配置已变化，请重新测试 SSH');
         moveProofs.delete(input.ssh_move_proof);next.ssh_fingerprint=proof.fingerprint;
       }
       moving.add(id);let c;
@@ -85,18 +87,16 @@ export function createSSH({db,vault,publicURL,bootstrap,ClientClass=Client}) {
     },
     runManaged(id,script,onComplete){
       const n=node(id);
-      if(!n.ssh_fingerprint||!n.ssh_password)throw error(400,'请先配置 SSH、测试连接并确认指纹');
+      if(!n.ssh_fingerprint||!hasSSHCredentials(n))throw error(400,'请先配置 SSH、测试连接并确认指纹');
       if(busy(id)||[...jobs.values()].filter(j=>j.status==='running').length>=2)throw error(409,'已有 SSH 任务正在进行，请稍后重试');
-      const password=vault.open(n.ssh_password,id),job={id:randomUUID(),node_id:id,status:'running',created:Math.floor(Date.now()/1000),finished:0,log:'正在连接 SSH…\n'};
+      const redact=sshRedactor(n,vault),job={id:randomUUID(),node_id:id,status:'running',created:Math.floor(Date.now()/1000),finished:0,log:'正在连接 SSH…\n'};
       jobs.set(job.id,job);for(const [key,value] of jobs)if(value.status!=='running'&&jobs.size>100)jobs.delete(key);
-      (async()=>{let c;try{c=await connect(n);const code=await exec(c,n.ssh_user==='root'?'sh -s':'sudo -n sh -s',script,600000,line=>{job.log=(job.log+line.replaceAll(password,'[已隐藏]').replace(/[\x00-\x08\x0b-\x1f\x7f]/g,'')+'\n').slice(-65536);});job.status=code===0?'success':'failed';job.log+=code===0?'操作完成。\n':`操作失败（退出码 ${code??'未知'}）。\n`;}catch(e){job.status='failed';job.log+=(e.status?e.message:friendly(e))+'\n';}finally{c?.end();job.finished=Math.floor(Date.now()/1000);try{onComplete?.({...job});}catch{job.status='failed';job.log+='无法保存操作结果，请核对远端服务状态。\n';}}})();
+      (async()=>{let c;try{c=await connect(n);const code=await exec(c,n.ssh_user==='root'?'sh -s':'sudo -n sh -s',script,600000,line=>{job.log=(job.log+redact(line)+'\n').slice(-65536);});job.status=code===0?'success':'failed';job.log+=code===0?'操作完成。\n':`操作失败（退出码 ${code??'未知'}）。\n`;}catch(e){job.status='failed';job.log+=(e.status?e.message:friendly(e))+'\n';}finally{c?.end();job.finished=Math.floor(Date.now()/1000);try{onComplete?.({...job});}catch{job.status='failed';job.log+='无法保存操作结果，请核对远端服务状态。\n';}}})();
       return {...job};
     },
     async draftProbe(input,owner){
       const old=input.id?node(input.id):{},fields=sshFields(input,old),id=randomUUID();
-      if(typeof input.ssh_password!=='string'||input.ssh_password.length>1024||input.ssh_password.includes('\0'))throw error(400,'SSH 密码格式无效');
-      const password=input.ssh_clear?'':input.ssh_password||(old.ssh_password?vault.open(old.ssh_password,old.id):'');if(!password)throw error(400,'请填写 SSH 密码');
-      const n={id,...fields,ssh_password:vault.seal(password,id)},key=await connect(n,true);
+      const n={id,...fields,...sshCredentialFields(input,old,vault,id)};if(!hasSSHCredentials(n))throw error(400,'请填写 SSH 密码或私钥');const key=await connect(n,true);
       for(const [key,value] of drafts)if(Date.now()-value.time>120000)drafts.delete(key);if(drafts.size>=100)drafts.delete(drafts.keys().next().value);
       drafts.set(id,{owner,n:{...n,ssh_fingerprint:key},node_id:old.id,signature:old.id?moveSignature(old):'',keep:input.ssh_keep_forwarding===true,time:Date.now()});
       return {challenge:id,fingerprint:key,trusted:old.ssh_host===fields.ssh_host&&old.ssh_port===fields.ssh_port&&old.ssh_fingerprint===key};
@@ -110,7 +110,7 @@ export function createSSH({db,vault,publicURL,bootstrap,ClientClass=Client}) {
           await verifyIdentity(c,draft.n,old,draft.n.ssh_fingerprint!==old.ssh_fingerprint);
           if(moveSignature(node(old.id))!==draft.signature)throw error(409,'配置已变化，请重新测试 SSH');
           for(const [key,value] of moveProofs)if(Date.now()-value.time>120000)moveProofs.delete(key);if(moveProofs.size>=100)moveProofs.delete(moveProofs.keys().next().value);
-          const proof=randomUUID();moveProofs.set(proof,{owner,node_id:old.id,signature:draft.signature,fields:sshFields(draft.n),password:passwordHash(vault.open(draft.n.ssh_password,draft.n.id)),fingerprint:draft.n.ssh_fingerprint,time:Date.now()});
+          const proof=randomUUID();moveProofs.set(proof,{owner,node_id:old.id,signature:draft.signature,fields:sshFields(draft.n),password:authHash(draft.n),fingerprint:draft.n.ssh_fingerprint,time:Date.now()});
           return {ok:true,move_proof:proof,message:'SSH 与原节点身份核验通过，请在两分钟内保存'};
         }
         return {ok:true,root:output.trim()==='0',message:output.trim()==='0'?'SSH 连接成功，可安装/更新；配置尚未保存':'SSH 连接成功；安装/更新需要 root 或免密 sudo，配置尚未保存'};
@@ -119,17 +119,17 @@ export function createSSH({db,vault,publicURL,bootstrap,ClientClass=Client}) {
     recent(id){const job=[...jobs.values()].filter(j=>j.node_id===id).at(-1);return job?{id:job.id,status:job.status,created:job.created}:null;},
     async probe(id){const n=node(id),key=await connect(n,true);probes.set(id,{key,host:n.ssh_host,port:n.ssh_port,time:Date.now()});return {fingerprint:key,trusted:key===n.ssh_fingerprint};},
     trust(id,key){const n=node(id),p=probes.get(id);if(!p||Date.now()-p.time>120000||p.host!==n.ssh_host||p.port!==n.ssh_port||p.key!==key)throw error(409,'指纹确认已过期，请重新测试连接');db.prepare('UPDATE nodes SET ssh_fingerprint=? WHERE id=?').run(key,id);probes.delete(id);},
-    async test(id){const n=node(id);if(!n.ssh_fingerprint||!n.ssh_password)throw error(400,'请保存密码并确认 SSH 指纹');const c=await connect(n);let output='';try{const code=await exec(c,'id -u', '',30000,line=>output+=line);if(code!==0)throw error(502,'SSH 已连接，但无法执行检测命令');return {ok:true,root:output.trim()==='0',message:output.trim()==='0'?'SSH 连接成功，可一键部署':'SSH 连接成功；一键部署需要 root 或免密 sudo'};}finally{c.end();}},
+    async test(id){const n=node(id);if(!n.ssh_fingerprint||!hasSSHCredentials(n))throw error(400,'请保存 SSH 凭据并确认 SSH 指纹');const c=await connect(n);let output='';try{const code=await exec(c,'id -u', '',30000,line=>output+=line);if(code!==0)throw error(502,'SSH 已连接，但无法执行检测命令');return {ok:true,root:output.trim()==='0',message:output.trim()==='0'?'SSH 连接成功，可一键部署':'SSH 连接成功；一键部署需要 root 或免密 sudo'};}finally{c.end();}},
     deploy(id){
-      const n=node(id);if(!n.enabled)throw error(400,'请先启用服务器');if(!n.ssh_fingerprint||!n.ssh_password)throw error(400,'请先测试连接并确认 SSH 指纹');
+      const n=node(id);if(!n.enabled)throw error(400,'请先启用服务器');if(!n.ssh_fingerprint||!hasSSHCredentials(n))throw error(400,'请先测试连接并确认 SSH 指纹');
       if(!/^https:\/\/[a-zA-Z0-9.-]+(?::\d+)?\/?$/.test(publicURL))throw error(400,'SSH 部署需要有效的 HTTPS PUBLIC_URL');
       if(busy(id)||[...jobs.values()].filter(j=>j.status==='running').length>=2)throw error(409,'已有部署任务正在进行，请稍后重试');
-      vault.open(n.ssh_password,id);
+      sshAuthOptions(n,vault);
       // New nodes retain their token encrypted; existing installations upgrade with their local config.
       const secret=n.agent_secret?vault.open(n.agent_secret,id):'';
       const job={id:randomUUID(),node_id:id,status:'running',created:Math.floor(Date.now()/1000),finished:0,log:'正在连接 SSH…\n'};jobs.set(job.id,job);
       for(const [key,value] of jobs)if(value.status!=='running'&&(jobs.size>100||Date.now()/1000-value.created>3600))jobs.delete(key);
-      const redact=line=>{for(const s of [secret,vault.open(n.ssh_password,id)])if(s)line=line.replaceAll(s,'[已隐藏]');return line.replace(/[a-f0-9]{64}/g,'[已隐藏密钥]').replace(/[\x00-\x08\x0b-\x1f\x7f]/g,'');};
+      const hide=sshRedactor(n,vault,[secret]),redact=line=>hide(line).replace(/[a-f0-9]{64}/g,'[已隐藏密钥]');
       const quote=value=>"'"+value.replaceAll("'","'\\''")+"'";
       const script=`set -eu\nif [ -f /etc/firefly-probe-agent.json ] || [ -f /etc/lightprobe-agent.json ]; then\n set -- --upgrade --server ${quote(publicURL)}${secret?" --token "+quote(secret):""}\nelse\n [ -n ${quote(secret)} ] || { echo '旧节点未保留安装密钥：请在详情重新生成密钥后重试部署。'; exit 1; }\n set -- --server ${quote(publicURL)} --token ${quote(secret)}\nfi\n${bootstrap}\nif command -v rc-service >/dev/null && [ -f /etc/init.d/firefly-probe-agent ]; then rc-service firefly-probe-agent status; else systemctl is-active --quiet firefly-probe-agent; fi\necho '采集端服务已启动，请等待主控收到上报。'\n`;
       (async()=>{let c;try{c=await connect(n);const command=n.ssh_user==='root'?'sh -s':'sudo -n sh -s';job.log+='SSH 已连接，正在安装或更新采集端…\n';const code=await exec(c,command,script,600000,line=>{job.log=(job.log+redact(line)+'\n').slice(-65536);});job.status=code===0?'success':'failed';job.log+=code===0?'部署完成；在线状态以采集端上报为准。\n':`部署失败（退出码 ${code??'未知'}），请检查上述日志。\n`;}catch(e){job.status='failed';job.log+=(e.status?e.message:friendly(e))+'\n';}finally{c?.end();job.finished=Math.floor(Date.now()/1000);}})();

@@ -13,6 +13,7 @@ import {createAgentBatch} from './agent-batch.mjs';
 import {createForwarding,forwardURLs,gostVersion} from './forwarding.mjs';
 import {createForwardRelay} from './forward-relay.mjs';
 import {forgetNode} from './node-removal.mjs';
+import {sshCredentialFields,hasSSHCredentials} from './ssh-auth.mjs';
 import {createForwardLimit} from './forward-limit.mjs';
 import {createForwardBatch} from './forward-batch.mjs';
 import {createForwardAlerts} from './forward-alerts.mjs';
@@ -135,10 +136,10 @@ export async function createApp(options = {}) {
   function configuredNode(input,old={},id=old.id,verifiedMove=false) {
     const fields={...nodeFields({...old,...input}),...sshFields(input,old)};fields.renewal_anchor_day=fields.expires?(fields.expires!==old.expires?Number(fields.expires.slice(-2)):old.renewal_anchor_day||Number(fields.expires.slice(-2))):0;
     if(id&&forwarding.hasNode(id)&&!verifiedMove&&(fields.ssh_host!==old.ssh_host||fields.ssh_port!==old.ssh_port||fields.ssh_user!==old.ssh_user))fail(409,'同一台机器换 IP，请勾选“同机换址，保留转发规则”；换成另一台机器请新建节点');
-    if(id&&input.ssh_clear===true&&forwarding.hasNode(id))fail(409,'请先删除全部转发规则，再清除 SSH 密码');
-    if(input.ssh_password!==undefined){if(typeof input.ssh_password!=='string'||input.ssh_password.length>1024||input.ssh_password.includes('\0'))fail(400,'SSH 密码格式无效');if(input.ssh_password)fields.ssh_password=vault.seal(input.ssh_password,id);}
+    if(id&&input.ssh_clear===true&&forwarding.hasNode(id))fail(409,'请先删除全部转发规则，再清除 SSH 凭据');
+    Object.assign(fields,sshCredentialFields(input,old,vault,id));
     if(input.country_override!==undefined){const code=input.country_override;if(typeof code!=='string'||code!==''&&(!/^[A-Z]{2}$/.test(code)||!publicFiles.has('flags/'+code.toLowerCase()+'.svg')))fail(400,'请选择有效国家，或自动识别');fields.country_override=code;}
-    if(input.ssh_clear===true)fields.ssh_password='';
+
     if(!verifiedMove&&(fields.ssh_host!==(old.ssh_host??'')||fields.ssh_port!==(old.ssh_port??22)))fields.ssh_fingerprint='';
     return fields;
   }
@@ -166,8 +167,8 @@ export async function createApp(options = {}) {
     return getNodes().map(n => {
       const live = latest.get(n.id), seen = live?.received ?? n.last_seen;
       const status = !n.enabled ? 'disabled' : !seen ? 'pending' : now()-seen > settings.offline_seconds ? 'offline' : 'online';
-      const { token_hash,ssh_password,agent_secret,country_ip, ...safe } = n;
-      safe.ssh_configured=Boolean(ssh_password);
+      const { token_hash,ssh_password,ssh_private_key,ssh_passphrase,agent_secret,country_ip, ...safe } = n;
+      safe.ssh_configured=hasSSHCredentials(n);
       safe.ssh_job=ssh.recent(n.id);
       safe.expiry=expiryView(n,today);
       return { ...safe,system:live?.metrics?.system||db.prepare('SELECT value FROM settings WHERE key=?').get('node_system:'+n.id)?.value||'',country_code:safe.country_override||safe.country_code, last_version:live?.metrics?.version??n.last_version, last_seen: seen, status, metrics: status === 'online' ? live?.metrics ?? null : null, traffic: dailyTotals(db,n,today), cost:nodeCost(n,rates), expired: Boolean(n.expires && n.expires < today),maintenance:n.maintenance_until>now() };
@@ -311,9 +312,9 @@ export async function createApp(options = {}) {
       try {
         const saved=JSON.parse(candidate.prepare("SELECT value FROM settings WHERE key='config'").get()?.value??'{}');
         settingsFields({...initial,...saved},{...initial,...saved});
-        const nodes=candidate.prepare('SELECT * FROM nodes').all();if(nodes.length>200)fail(400,'备份节点超过 200 台');for(const n of nodes){nodeFields(n);sshFields(n);if(typeof n.ssh_fingerprint!=="string"||n.ssh_fingerprint&& !/^SHA256:[A-Za-z0-9+/]{43}$/.test(n.ssh_fingerprint))fail(400,"备份 SSH 指纹无效");}
+        const nodes=candidate.prepare('SELECT * FROM nodes').all();if(nodes.length>200)fail(400,'备份节点超过 200 台');for(const n of nodes){nodeFields(n);sshFields(n);if(!['password','key'].includes(n.ssh_auth_mode))fail(400,'备份 SSH 认证方式无效');if(typeof n.ssh_fingerprint!=="string"||n.ssh_fingerprint&& !/^SHA256:[A-Za-z0-9+/]{43}$/.test(n.ssh_fingerprint))fail(400,"备份 SSH 指纹无效");}
         const pluginRows=candidate.prepare("SELECT key,value FROM settings WHERE key LIKE 'plugin:%'").all();if(pluginRows.length>30)fail(400,'备份插件超过 30 个');for(const row of pluginRows){const pack=validatePluginPackage(JSON.parse(row.value));if(row.key!=='plugin:'+pack.manifest.id)fail(400,'备份插件 ID 不一致');}
-        if(archive){const sourceVault=vaultFromKey(Buffer.from(archive.ssh_key,'base64'));for(const node of nodes)for(const field of ['ssh_password','agent_secret'])if(node[field])candidate.prepare('UPDATE nodes SET '+field+'=? WHERE id=?').run(vault.seal(sourceVault.open(node[field],node.id),node.id),node.id);
+        if(archive){const sourceVault=vaultFromKey(Buffer.from(archive.ssh_key,'base64'));for(const node of nodes)for(const field of ['ssh_password','ssh_private_key','ssh_passphrase','agent_secret'])if(node[field])candidate.prepare('UPDATE nodes SET '+field+'=? WHERE id=?').run(vault.seal(sourceVault.open(node[field],node.id),node.id),node.id);
           const telegramSecret=candidate.prepare("SELECT value FROM settings WHERE key='telegram_secret'").get();if(telegramSecret)candidate.prepare("UPDATE settings SET value=? WHERE key='telegram_secret'").run(vault.seal(sourceVault.open(telegramSecret.value,'telegram-token'),'telegram-token'));
           const cloud=candidate.prepare("SELECT value FROM settings WHERE key='rclone_config'").get();if(cloud){const text=sourceVault.open(cloud.value,'rclone-config');parseDriveConfig(text);candidate.prepare("UPDATE settings SET value=? WHERE key='rclone_config'").run(vault.seal(text,'rclone-config'));}
           const remote=candidate.prepare("SELECT value FROM settings WHERE key='remote_backup'").get();if(remote){const c=remoteFields({},JSON.parse(remote.value));if(c.pass_cipher)c.pass_cipher=vault.seal(sourceVault.open(c.pass_cipher,'remote-backup'),'remote-backup');candidate.prepare("UPDATE settings SET value=? WHERE key='remote_backup'").run(JSON.stringify(c));}}
@@ -468,7 +469,7 @@ export async function createApp(options = {}) {
         const sshRoute=/^\/api\/nodes\/([a-f0-9-]{36})\/ssh\/(probe|trust|test|deploy)$/.exec(path);
         if(sshRoute&&method==='POST'){const [unused,id,action]=sshRoute;if(action==='probe')return send(res,200,await ssh.probe(id));if(action==='trust'){const input=await body(req);ssh.trust(id,input.fingerprint);return send(res,200,{ok:true});}if(action==='test')return send(res,200,await ssh.test(id));return send(res,202,ssh.deploy(id));}
         const jobRoute=/^\/api\/ssh\/jobs\/([a-f0-9-]{36})$/.exec(path);if(jobRoute&&method==='GET')return send(res,200,ssh.status(jobRoute[1]));
-        if(path==='/api/nodes'&&method==='GET') {const rates=fx.read();const {rates:unused,...fxInfo}=rates;return send(res,200,{nodes:snapshot(),settings:safeSettings(),cost_summary:costSummary(getNodes(),rates),fx_info:fxInfo,server_time:now(),version:'0.2.57',agent_version:'0.2.7'});}
+        if(path==='/api/nodes'&&method==='GET') {const rates=fx.read();const {rates:unused,...fxInfo}=rates;return send(res,200,{nodes:snapshot(),settings:safeSettings(),cost_summary:costSummary(getNodes(),rates),fx_info:fxInfo,server_time:now(),version:'0.2.58',agent_version:'0.2.7'});}
         const adminNetwork=/^\/api\/nodes\/([a-f0-9-]{36})\/network-history$/.exec(path);if(adminNetwork&&method==='GET')return send(res,200,publicHistory(adminNetwork[1],true));
         if(path==='/api/network/history'&&method==='GET')return send(res,200,publicHistory('network',true));
         if(path==='/api/costs'&&method==='GET')return send(res,200,{...costSummary(getNodes(),fx.read()),fx:fx.read()});
@@ -504,7 +505,7 @@ export async function createApp(options = {}) {
             const fields=sshFields(input,node),move=input.ssh_keep_forwarding===true&&(fields.ssh_host!==node.ssh_host||fields.ssh_port!==node.ssh_port||fields.ssh_user!==node.ssh_user||Boolean(input.ssh_move_proof));
             const n=configuredNode(input,node,node.id,move),epoch=restoreEpoch;
             if(n.interface!==node.interface && db.prepare('SELECT 1 FROM daily WHERE node_id=? LIMIT 1').get(node.id)) fail(409,'已有流量历史后不能更换统计网卡；请新建节点，避免重复计费');
-            if(move){const verified=await ssh.verifyMove(node.id,input,session.cookie);n.ssh_fingerprint=verified.fingerprint;const current=getNodes().find(x=>x.id===node.id);if(epoch!==restoreEpoch||!current||ssh.busy(node.id)||Object.keys(n).concat(['ssh_password','ssh_fingerprint','token_hash']).some(k=>current[k]!==node[k]))fail(409,'核验期间服务器配置已变化，请刷新后重试');}
+            if(move){const verified=await ssh.verifyMove(node.id,input,session.cookie);n.ssh_fingerprint=verified.fingerprint;const current=getNodes().find(x=>x.id===node.id);if(epoch!==restoreEpoch||!current||ssh.busy(node.id)||Object.keys(n).concat(['ssh_password','ssh_private_key','ssh_passphrase','ssh_auth_mode','ssh_fingerprint','token_hash']).some(k=>current[k]!==node[k]))fail(409,'核验期间服务器配置已变化，请刷新后重试');}
             writeNode(node.id,n);
             return send(res,200,{ok:true,...(move?{message:'同机换址已验证，转发规则和历史均已保留；无需重新部署'}:{})});
           }
@@ -557,6 +558,6 @@ export async function createApp(options = {}) {
 function formatBytes(bytes) {const units=['B','KiB','MiB','GiB','TiB'];let i=0;while(bytes>=1024&&i<4){bytes/=1024;i++;}return bytes.toFixed(1)+' '+units[i];}
 if(process.argv[1] && import.meta.url===pathToFileURL(resolve(process.argv[1])).href) {
   const app=await createApp();
-  app.server.listen(Number(process.env.PORT ?? 8080),process.env.HOST ?? '127.0.0.1',()=>console.log(`Firefly Probe 0.2.57 listening on ${process.env.HOST ?? '127.0.0.1'}:${process.env.PORT ?? 8080}`));
+  app.server.listen(Number(process.env.PORT ?? 8080),process.env.HOST ?? '127.0.0.1',()=>console.log(`Firefly Probe 0.2.58 listening on ${process.env.HOST ?? '127.0.0.1'}:${process.env.PORT ?? 8080}`));
   let stopping=false;for(const sig of ['SIGINT','SIGTERM']) process.on(sig,async()=>{if(stopping)return;stopping=true;await app.close();process.exit(0);});
 }

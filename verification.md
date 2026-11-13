@@ -435,3 +435,11 @@ Installer locale hotfix: braced variables adjacent to Chinese punctuation in tim
 - Linux 真实 GOST 测试增加旧日志策略升级、进程PID仅首次改变、warn/error专用文件、实际失败连接日志和1 MB测试限额触发轮转，继续验证TCP / UDP与计数及规则隔离。本机尝试官方Windows测试包时被安全软件拦截，未绕过或关闭防护，未运行该二进制；实际GOST轮转仍需GitHub Linux CI确认。本机未连接生产 / 推送GitHub。
 
 - 最终全量Node再次142项通过（work/test-0257-final.log）；work/check-0257.mjs记录Python24项引擎 + 6项诊断及8项Node转发相关检查通过。Chrome本地真实主控验证单条更新确认、批量安装说明及编辑窗口均提示首次日志保护的同机中断；未提交部署，未连接生产，工作脚本work/browser-0257.mjs。
+
+## v0.2.58 · 2026-11-13
+
+- 全量146项Node测试通过（work/test-0258-final.log）。原密码/指纹/同机换址测试保留并通过；新增tests/ssh-key.test.mjs真实SSH服务验证OpenSSH Ed25519、RSA PEM及加密RSA私钥，含签名验证、禁止密码回退、草稿认证/CSRF、加密绑定、留空保留、错误私钥/公钥/错误口令拒绝、切换方式清理、指纹不符拒绝、日志私钥/口令脱敏、采集/转发任务、密钥批量门槛、换址证明绑定认证内容、主控重启和加密备份跨主控恢复后再次真实登录。
+- Chrome本地真实API/SQLite验证：选择认证方式、文件读取、加密保存、重新打开不回显、留空保留、手机/深色无溢出，无页面异常。工作脚本work/browser-0258.mjs；截图outputs/SSH密钥-v0.2.58.png使用重新打开的空私钥框，不展示测试私钥或口令。浏览器未连接远端，真实SSH测试仅本地测试服务。
+- 采集端仍0.2.7，无Go或Linux服务部署逻辑变更。未连接生产或推送GitHub，生产服务器的实际SSH算法/authorized_keys/sudo权限仍需实际测试。此前真实GOST轮转仍待Linux CI，不把本次SSH协议测试等同于Linux安装测试。
+
+- 最终146项全量通过，新增清除私钥后仍可不配置SSH继续编辑节点的回归用例。连接参数在创建Client及占用连接槽位前解析，格式或解密错误不占用SSH连接名额；随后真实SSH/密码/换址18项检查通过。

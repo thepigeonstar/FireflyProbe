@@ -1,3 +1,4 @@
+import {hasSSHCredentials} from './ssh-auth.mjs';
 import {randomUUID} from 'node:crypto';
 import {dayKey} from './store.mjs';
 const fail=message=>{throw Object.assign(new Error(message),{status:400});};
@@ -42,9 +43,9 @@ export function createForwardLimit(db,forwarding,ssh,getNodes,timezone,notify=()
   }
  }
  return {view,observe,assertStartAllowed,
-  save(id,input){const n=node(id);if(typeof input?.enabled!=='boolean'||typeof input.limit_gib!=='number'||!Number.isFinite(input.limit_gib)||input.limit_gib<0||input.limit_gib*1073741824>8e15||input.enabled&&Math.round(input.limit_gib*1073741824)<1)fail('请填写有效的暂停阈值（GiB），启用时必须大于 0');if(input.enabled&&(!n.ssh_host||!n.ssh_password||!n.ssh_fingerprint))fail('启用前请配置 SSH 并确认指纹，供主控执行暂停');const s=state(id);if(s?.operation==='resume')fail('恢复任务尚未结束，请稍后修改');put(configKey(id),{enabled:input.enabled,bytes:Math.round(input.limit_gib*1073741824)});return view(id);},
+  save(id,input){const n=node(id);if(typeof input?.enabled!=='boolean'||typeof input.limit_gib!=='number'||!Number.isFinite(input.limit_gib)||input.limit_gib<0||input.limit_gib*1073741824>8e15||input.enabled&&Math.round(input.limit_gib*1073741824)<1)fail('请填写有效的暂停阈值（GiB），启用时必须大于 0');if(input.enabled&&(!n.ssh_host||!hasSSHCredentials(n)||!n.ssh_fingerprint))fail('启用前请配置 SSH 并确认指纹，供主控执行暂停');const s=state(id);if(s?.operation==='resume')fail('恢复任务尚未结束，请稍后修改');put(configKey(id),{enabled:input.enabled,bytes:Math.round(input.limit_gib*1073741824)});return view(id);},
   resume(id){const n=node(id),c=config(id),s=state(id);if(!s?.latched)fail('该服务器没有流量暂停记录');if(s.items.some(i=>['queued','running','failed'].includes(i.status))||ssh.busy(id)||s.operation==='resume')fail('还有未确认完成的暂停任务，请核对日志并等待停止成功后恢复');const u=usage(n,Math.floor(Date.now()/1000));if(c.enabled&&(!u.valid||u.bytes>=c.bytes))fail('请先提高暂停阈值或关闭此功能；启用时需有效统计且当前用量低于阈值');
-   if(!n.enabled||!n.ssh_host||!n.ssh_password||!n.ssh_fingerprint)fail('请启用服务器并配置 SSH、确认指纹后恢复');
+   if(!n.enabled||!n.ssh_host||!hasSSHCredentials(n)||!n.ssh_fingerprint)fail('请启用服务器并配置 SSH、确认指纹后恢复');
    s.operation='resume';s.status='resuming';s.items=s.items.filter(i=>i.status==='stopped'&&i.was_running).map(i=>({...i,resume:true,status:'queued',attempts:0,next_retry:0}));put(stateKey(id),s);return view(id);
   }
  };

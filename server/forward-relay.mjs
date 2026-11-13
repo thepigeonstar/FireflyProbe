@@ -1,3 +1,4 @@
+import {hasSSHCredentials} from './ssh-auth.mjs';
 import {randomUUID} from 'node:crypto';
 import {forwardingFields} from './forwarding.mjs';
 const fail=(status,message)=>{throw Object.assign(new Error(message),{status});};
@@ -19,7 +20,7 @@ export function createForwardRelay(db,forwarding,ssh,getNodes){
   }catch{p.status='interrupted';p.error='任务已中断或日志已过期，请检查远端规则；不会自动继续切换入口。';}
   return save(p);
  }
- function readyNode(id){const n=getNodes().find(n=>n.id===id);if(!n||!n.enabled)fail(400,'请选择启用的服务器');if(!n.ssh_host||!n.ssh_password||!n.ssh_fingerprint)fail(400,'请先配置 SSH 并确认指纹');if(ssh.busy(id))fail(409,'服务器有任务正在执行，请稍后重试');return n;}
+ function readyNode(id){const n=getNodes().find(n=>n.id===id);if(!n||!n.enabled)fail(400,'请选择启用的服务器');if(!n.ssh_host||!hasSSHCredentials(n)||!n.ssh_fingerprint)fail(400,'请先配置 SSH 并确认指纹');if(ssh.busy(id))fail(409,'服务器有任务正在执行，请稍后重试');return n;}
  function sourceRule(rule,input){
   if(!input||typeof input!=='object'||Array.isArray(input))fail(400,'中转配置无效');
   const source=forwarding.list().find(r=>r.id===rule);if(!source)fail(404,'原规则不存在');

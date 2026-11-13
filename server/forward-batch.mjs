@@ -1,3 +1,4 @@
+import {hasSSHCredentials} from './ssh-auth.mjs';
 export function createForwardBatch(forwarding,ssh,getNodes){
  let batch=null,timer=null,stopped=false;
  const view=()=>batch?structuredClone(batch):{status:'idle',items:[]};
@@ -13,7 +14,7 @@ export function createForwardBatch(forwarding,ssh,getNodes){
   const nodes=getNodes();if(typeof nodeID!=='string'||nodeID&&!nodes.some(n=>n.id===nodeID))throw Object.assign(new Error('服务器不存在'),{status:404});
   if(scope!==null&&(!Array.isArray(scope)||scope.some(id=>!nodes.some(n=>n.id===id))))throw Object.assign(new Error('分组范围无效'),{status:400});const rules=forwarding.list().filter(r=>(!nodeID||r.node_id===nodeID)&&(scope===null||scope.includes(r.node_id)));if(!rules.length)throw Object.assign(new Error('当前范围没有转发规则'),{status:400});
   if(ruleIDs!==null&&ruleIDs.some(id=>!rules.some(r=>r.id===id)))throw Object.assign(new Error('所选规则已变化或不在当前范围，请重新选择'),{status:409});
-  const items=rules.filter(r=>ruleIDs===null||ruleIDs.includes(r.id)).map(r=>{const n=nodes.find(n=>n.id===r.node_id),draft=action==='remove'&&!r.installed&&r.state==='not_deployed'&&!r.job_id,reason=r.job?.status==='running'?'规则任务正在执行':draft?'':!n?'服务器不存在':!n.enabled?'服务器已停用':!n.ssh_host||!n.ssh_password?'未配置 SSH':!n.ssh_fingerprint?'未确认 SSH 指纹':action==='start'&&r.pending_edit?'编辑部署尚未完成':'';return {id:r.id,node_id:r.node_id,name:r.name||'未命名',server:n?.name||'未知服务器',operation:action==='remove'?'删除':r.installed?'更新':'安装',status:reason?'skipped':'queued',message:reason};});
+  const items=rules.filter(r=>ruleIDs===null||ruleIDs.includes(r.id)).map(r=>{const n=nodes.find(n=>n.id===r.node_id),draft=action==='remove'&&!r.installed&&r.state==='not_deployed'&&!r.job_id,reason=r.job?.status==='running'?'规则任务正在执行':draft?'':!n?'服务器不存在':!n.enabled?'服务器已停用':!n.ssh_host||!hasSSHCredentials(n)?'未配置 SSH':!n.ssh_fingerprint?'未确认 SSH 指纹':action==='start'&&r.pending_edit?'编辑部署尚未完成':'';return {id:r.id,node_id:r.node_id,name:r.name||'未命名',server:n?.name||'未知服务器',operation:action==='remove'?'删除':r.installed?'更新':'安装',status:reason?'skipped':'queued',message:reason};});
   batch={status:'running',action,node_id:nodeID,node_ids:scope,created:Math.floor(Date.now()/1000),items};step();return view();
  },cancel(){stopped=true;clearTimeout(timer);if(batch?.status==='running'){batch.status='interrupted';for(const i of batch.items)if(['running','queued'].includes(i.status)){i.status='failed';i.message='主控停止，队列已中断';}}},reset(){stopped=false;}};
 }
