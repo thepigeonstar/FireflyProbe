@@ -1,8 +1,9 @@
+import {testSSHKeyPair} from './helpers/ssh-keys.mjs';
 import test from 'node:test';import assert from 'node:assert/strict';
 import {forwardingFields,forwardURLs,forwardScript,gostHashes} from '../server/forwarding.mjs';
 import {createApp} from '../server/main.mjs';import {createVault} from '../server/ssh.mjs';
 import {mkdtempSync,rmSync} from 'node:fs';import {tmpdir} from 'node:os';import {join} from 'node:path';
-import {spawnSync} from 'node:child_process';import ssh2 from 'ssh2';const {Server,utils}=ssh2;
+import {spawnSync} from 'node:child_process';import ssh2 from 'ssh2';const {Server}=ssh2;
 const input={protocol:'both',listen_port:10161,target_host:'149.7.2.22',target_port:8443},id='aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee';
 test('转发规则验证、IPv6、官方校验、systemd/OpenRC 服务脚本语法',()=>{
  assert.deepEqual(forwardURLs(forwardingFields(input)),['tcp://:10161/149.7.2.22:8443','udp://:10161/149.7.2.22:8443']);assert.equal(forwardURLs(forwardingFields({...input,protocol:'tcp',target_host:'2001:db8::1'}))[0],'tcp://:10161/[2001:db8::1]:8443');
@@ -11,7 +12,7 @@ test('转发规则验证、IPv6、官方校验、systemd/OpenRC 服务脚本语�
 });
 test('转发 API 身份/CSRF、SSH 指纹、冲突、任务成功失败与远端删除',async()=>{
  const dir=mkdtempSync(join(tmpdir(),'forward-api-')),password='fake-forwarding-ssh',inputs=[];let failRemote=false;
- const sshServer=new Server({hostKeys:[utils.generateKeyPairSync('ed25519').private]},client=>{client.on('error',()=>{});client.on('authentication',ctx=>ctx.method==='password'&&ctx.password===password?ctx.accept():ctx.reject());client.on('ready',()=>client.on('session',accept=>{const session=accept();session.on('exec',(accept,reject,info)=>{assert.equal(info.command,'sh -s');const stream=accept();let script='';stream.on('data',b=>script+=b);stream.on('end',()=>{inputs.push(script);const encoded=/json.loads\(base64.b64decode\('([^']+)'\)\)/.exec(script);const payload=encoded?JSON.parse(Buffer.from(encoded[1],'base64').toString()):{};stream.write(password+'\nFIREFLY_ENGINE_SHARED\n'+(payload.action==='remove'?'FIREFLY_ENGINE_EMPTY\nFIREFLY_FORWARD_REMOVED':payload.action==='stop'?'FIREFLY_FORWARD_STOPPED':'FIREFLY_FORWARD_ACTIVE')+'\n');stream.exit(failRemote?1:0);stream.end();});});}));});await new Promise(r=>sshServer.listen(0,'127.0.0.1',r));
+ const sshServer=new Server({hostKeys:[testSSHKeyPair().private]},client=>{client.on('error',()=>{});client.on('authentication',ctx=>ctx.method==='password'&&ctx.password===password?ctx.accept():ctx.reject());client.on('ready',()=>client.on('session',accept=>{const session=accept();session.on('exec',(accept,reject,info)=>{assert.equal(info.command,'sh -s');const stream=accept();let script='';stream.on('data',b=>script+=b);stream.on('end',()=>{inputs.push(script);const encoded=/json.loads\(base64.b64decode\('([^']+)'\)\)/.exec(script);const payload=encoded?JSON.parse(Buffer.from(encoded[1],'base64').toString()):{};stream.write(password+'\nFIREFLY_ENGINE_SHARED\n'+(payload.action==='remove'?'FIREFLY_ENGINE_EMPTY\nFIREFLY_FORWARD_REMOVED':payload.action==='stop'?'FIREFLY_FORWARD_STOPPED':'FIREFLY_FORWARD_ACTIVE')+'\n');stream.exit(failRemote?1:0);stream.end();});});}));});await new Promise(r=>sshServer.listen(0,'127.0.0.1',r));
  const app=await createApp({password:'forward-admin-2026',dbPath:join(dir,'db.sqlite'),disableExternal:true,disableTelegram:true});await new Promise(r=>app.server.listen(0,'127.0.0.1',r));const base='http://127.0.0.1:'+app.server.address().port;let headers={'Content-Type':'application/json'};
  const call=async(path,method='GET',data)=>{const r=await fetch(base+path,{method,headers,body:data===undefined?undefined:JSON.stringify(data)});return {status:r.status,data:await r.json()};};
  try{

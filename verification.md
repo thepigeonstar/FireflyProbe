@@ -450,3 +450,12 @@ Installer locale hotfix: braced variables adjacent to Chinese punctuation in tim
 - 本地真实HTTP / SQLite验证管理员节点及转发列表摘要一致且无原始任务日志，公开API及插件读取不增加保护配置，未经登录不能读取管理列表。
 - Chrome真实本地API验证六种状态在仪表盘卡片/列表、服务器列表、转发侧栏均可见，悬停850 / 900 GiB按仅上传口径、点击定位正确服务器、绿色在线状态保留、键盘Enter、无历史点击穿透/嵌套button、保存后立即更新、关闭后仍显示暂停、公开页无标签、手机/深色无溢出且无页面异常。work/browser-0259.mjs，截图outputs/流量保护标识-v0.2.59.png。
 - 未修改自动暂停/恢复执行逻辑、GOST、采集端或系统服务，仅添加后台只读状态摘要及入口；采集端仍0.2.7。浏览器使用本地测试状态，未连接生产SSH或推送GitHub。
+
+## v0.2.59 CI 测试密钥补丁 · 2026-11-13
+
+- 用户提交e3121ddede21c040998bf6cd318f079fcb35fb17，Check run43419392390 / job131865282970，实际失败步骤Run npm test。用户完整日志确认tests/ssh-move.test.mjs构造ssh2.Server时“Cannot parse privateKey: Malformed OpenSSH private key”，流量标识测试此前已通过。未登录日志接口403，仅公开API可读取步骤；具体异常来自用户提供的日志。
+- 本地复现ssh2 1.17.0 utils.generateKeyPairSync('ed25519')随机缺陷：1000份中5份无法解析；另次抽样明确失败公钥字段只有31字节。安装依赖源码及对应上游v1.17.0 keygen.js显示，处理DER BIT STRING时剔除全部开头零字节，把真实公钥的0x00也裁掉。生产模块未使用该密钥生成函数。
+- tests/helpers/ssh-keys.mjs改用Node crypto / OpenSSL产生Ed25519密钥，以JWK精确保留32字节公钥/种子，按OpenSSH公开格式生成临时测试封装。替换ssh-move/ssh/forwarding/forward-diagnostic及ssh-key测试中的全部同类生成调用；未改生产SSH私钥解析、指纹校验、依赖版本或工作流检查。
+- 新tests/ssh-keys.test.mjs包含公钥首字节为零的确定性公开测试种子向量（索引36）、Node原生签名与ssh2解析器双向交叉验证，以及1000份原生随机密钥的完整解析和公私钥一致性检查；不重试、不跳过、不筛掉前导零样本。
+- 全量150项测试通过(work/test-0259-ci-fix.log)；同机换址真实协议套件连续10/10通过(work/ssh-fixture-stability.log)。Windows OpenSSH ssh-keygen公钥检查及指纹比对通过；私钥-y检查曾因临时文件继承ACL被系统拒绝，未改ACL/禁用检查，私钥格式与签名由独立Node/ssh2测试验证，不声称该私钥CLI检查通过。此后未执行额外生产或界面测试，应用界面及版本仍0.2.59 / agent0.2.7。
+- 尚未推送修复，原GitHub提交仍为失败状态，需用户重新上传后确认Linux CI；未连接生产。

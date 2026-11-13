@@ -1,9 +1,10 @@
+import {testSSHKeyPair} from './helpers/ssh-keys.mjs';
 import test from 'node:test';import assert from 'node:assert/strict';import {mkdtempSync,rmSync,writeFileSync,unlinkSync} from 'node:fs';import {join} from 'node:path';import {tmpdir} from 'node:os';import {randomUUID} from 'node:crypto';import {spawnSync} from 'node:child_process';import ssh2 from 'ssh2';import {createApp} from '../server/main.mjs';
-const {Server,utils}=ssh2;
+const {Server}=ssh2;
 test('同机换址真实 SSH：指纹固定、身份核验、历史保留、失败不改配置及任务互斥',async t=>{
- const dir=mkdtempSync(join(tmpdir(),'ssh-move-')),key=utils.generateKeyPairSync('ed25519').private,password='move-private-fixture';let owner=true,script='',pause=null,signal=null;
+ const dir=mkdtempSync(join(tmpdir(),'ssh-move-')),key=testSSHKeyPair().private,password='move-private-fixture';let owner=true,script='',pause=null,signal=null;
  const makeServer=hostKey=>new Server({hostKeys:[hostKey]},client=>{client.on('error',()=>{});client.on('authentication',ctx=>ctx.method==='password'&&ctx.password===password?ctx.accept():ctx.reject());client.on('ready',()=>client.on('session',accept=>{const session=accept();session.on('exec',(accept,unused,info)=>{const stream=accept();if(info.command==='id -u'){stream.write('0\n');stream.exit(0);stream.end();return;}assert.equal(info.command,'sh -s');let text='';stream.on('data',chunk=>text+=chunk);stream.on('end',async()=>{script=text;signal?.();if(pause)await pause;stream.write(owner?'FIREFLY_SAME_MACHINE\n':'wrong owner\n');stream.exit(owner?0:3);stream.end();});});}));});
- const server=makeServer(key),other=makeServer(utils.generateKeyPairSync('ed25519').private);await new Promise(r=>server.listen(0,'0.0.0.0',r));await new Promise(r=>other.listen(0,'127.0.0.1',r));
+ const server=makeServer(key),other=makeServer(testSSHKeyPair().private);await new Promise(r=>server.listen(0,'0.0.0.0',r));await new Promise(r=>other.listen(0,'127.0.0.1',r));
  const app=await createApp({password:'move-admin-fixture',publicURL:'https://probe.example.test',dbPath:join(dir,'db.sqlite'),disableExternal:true,disableTelegram:true});await new Promise(r=>app.server.listen(0,'127.0.0.1',r));const base='http://127.0.0.1:'+app.server.address().port,headers={'Content-Type':'application/json'},call=async(path,method='GET',data)=>{const r=await fetch(base+path,{method,headers,body:data===undefined?undefined:JSON.stringify(data)});return {status:r.status,data:await r.json(),r};};let node;
  try{
  const login=await call('/admin/api/login','POST',{username:'admin',password:'move-admin-fixture'});headers.Cookie=login.r.headers.get('set-cookie').split(';')[0];headers['X-CSRF-Token']=login.data.csrf;

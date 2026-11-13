@@ -1,10 +1,11 @@
+import {testSSHKeyPair} from './helpers/ssh-keys.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync,rmSync,readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import ssh2 from 'ssh2';
-const { Server,utils }=ssh2;
+const { Server }=ssh2;
 import { createVault,sshFields } from '../server/ssh.mjs';
 import { createApp } from '../server/main.mjs';
 
@@ -15,7 +16,7 @@ test('SSH 凭据加密绑定节点，密钥可跨重启使用，IP 和端口校�
 
 test('真实 SSH 协议：指纹确认、密码验证、部署日志脱敏、权限与失败状态',async t=>{
   const dir=mkdtempSync(join(tmpdir(),'firefly-ssh-')),password='ssh-private-password-2026';let commandInput='',failInstall=false;
-  const sshServer=new Server({hostKeys:[utils.generateKeyPairSync('ed25519').private]},client=>{
+  const sshServer=new Server({hostKeys:[testSSHKeyPair().private]},client=>{
     client.on('error',()=>{});
     client.on('authentication',ctx=>{if(ctx.method==='password'&&ctx.username==='root'&&ctx.password===password)ctx.accept();else ctx.reject();});
     client.on('ready',()=>client.on('session',accept=>{const session=accept();session.on('exec',(accept,unused,info)=>{const stream=accept();if(info.command==='id -u'){stream.write('0\n');stream.exit(0);stream.end();return;}assert.equal(info.command,'sh -s');let input='';stream.on('data',chunk=>input+=chunk.toString());stream.on('end',()=>{commandInput=input;const token=/--token '([a-f0-9]{64})'/.exec(input)?.[1];stream.write('installer output\n'+password+'\n'+(token||'')+'\n');stream.exit(failInstall?11:0);stream.end();});});}));
