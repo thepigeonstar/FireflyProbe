@@ -1,0 +1,26 @@
+import test from 'node:test';import assert from 'node:assert/strict';import {createApp} from '../server/main.mjs';import {forgetNode} from '../server/node-removal.mjs';import {randomUUID} from 'node:crypto';import {mkdtempSync,rmSync} from 'node:fs';import {join} from 'node:path';import {tmpdir} from 'node:os';
+test('失效服务器直接删除：认证/确认、离线无需SSH、关联清理、其他机器保留',async()=>{
+ const dir=mkdtempSync(join(tmpdir(),'forget-node-')),app=await createApp({password:'forget-node-fixture',dbPath:join(dir,'db.sqlite'),disableExternal:true,disableTelegram:true});await new Promise(r=>app.server.listen(0,'127.0.0.1',r));const base='http://127.0.0.1:'+app.server.address().port,headers={'Content-Type':'application/json'},call=(path,method='GET',body)=>fetch(base+path,{method,headers,body:body===undefined?undefined:JSON.stringify(body)}),put=(key,value)=>app.db.prepare('INSERT OR REPLACE INTO settings VALUES(?,?)').run(key,JSON.stringify(value)),read=key=>app.db.prepare('SELECT value FROM settings WHERE key=?').get(key);
+ try{
+  const login=await call('/admin/api/login','POST',{username:'admin',password:'forget-node-fixture'}),session=await login.json();headers.Cookie=login.headers.get('set-cookie').split(';')[0];headers['X-CSRF-Token']=session.csrf;
+  const a=await(await call('/api/nodes','POST',{name:'失效机器'})).json(),b=await(await call('/api/nodes','POST',{name:'保留机器'})).json(),ra=randomUUID(),rb=randomUUID(),candidate=randomUUID();
+  put('forwarding:'+ra,{id:ra,node_id:a.id,installed:true,state:'running',pending_edit:{id:candidate}});put('forwarding:'+rb,{id:rb,node_id:b.id,installed:true,state:'stopped',target_host:'192.0.2.1'});
+  for(const r of [ra,rb,candidate])for(const prefix of ['forward_month:','forward_day:'])put(prefix+r+':2026-11-13',{rx:123,tx:456});
+  put('node_system:'+a.id,{system:'Debian'});put('forward_engine:'+a.id,{mode:'shared'});put('forward_relay:'+randomUUID(),{source:{node_id:b.id},relay:{node_id:a.id}});put('forward_groups',[{id:randomUUID(),name:'组',node_ids:[a.id,b.id]}]);put('forward_alert_events',[{node_id:a.id},{node_id:b.id}]);put('forward_alert_state',{['node:'+a.id]:'offline',['rule:'+ra]:'failed',['rule:'+rb]:'idle'});
+  app.db.prepare('INSERT INTO daily VALUES(?,?,?,?,?)').run(a.id,'eth0','2026-11-13',12,34);app.db.prepare('INSERT INTO minutes VALUES(?,?,?,?,?,?,?)').run(a.id,1,1,2,3,4,1);app.db.prepare('INSERT INTO alerts VALUES(?,?,?,?)').run(a.id,'offline',1,1);
+  app.db.prepare('INSERT INTO outbox(event_key,message,created) VALUES(?,?,?)').run('offline:'+a.id+':1','old',1);
+  assert.equal((await call('/api/nodes/'+a.id,'DELETE')).status,409);delete headers['X-CSRF-Token'];assert.equal((await call('/api/nodes/'+a.id+'?mode=forget','DELETE',{confirmation:a.id})).status,403);headers['X-CSRF-Token']=session.csrf;
+  assert.equal((await call('/api/nodes/'+a.id+'?mode=forget','DELETE',{confirmation:b.id})).status,400);assert.ok(read('forwarding:'+ra));
+  const result=await call('/api/nodes/'+a.id+'?mode=forget','DELETE',{confirmation:a.id});assert.equal(result.status,200);assert.equal((await result.json()).removed_rules,1);
+  for(const key of ['forwarding:'+ra,'forward_engine:'+a.id,'node_system:'+a.id,'forward_day:'+ra+':2026-11-13','forward_day:'+candidate+':2026-11-13'])assert.equal(read(key),undefined,key);
+  assert.ok(read('forwarding:'+rb));assert.ok(read('forward_day:'+rb+':2026-11-13'));assert.equal(app.db.prepare("SELECT count(*) n FROM settings WHERE key LIKE 'forward_relay:%'").get().n,0);assert.deepEqual(JSON.parse(read('forward_groups').value)[0].node_ids,[b.id]);
+  for(const table of ['daily','minutes','alerts'])assert.equal(app.db.prepare(`SELECT count(*) n FROM ${table} WHERE node_id=?`).get(a.id).n,0);assert.equal(app.db.prepare('SELECT count(*) n FROM outbox').get().n,0);
+  assert.equal((await(await call('/api/nodes')).json()).nodes.length,1);assert.equal((await call('/api/nodes/'+a.id+'?mode=forget','DELETE',{confirmation:a.id})).status,404);delete headers.Cookie;assert.equal((await call('/api/nodes/'+b.id+'?mode=forget','DELETE',{confirmation:b.id})).status,401);
+ }finally{await app.close();rmSync(dir,{recursive:true,force:true});}
+});
+
+test('本地删除为原子事务：节点删除失败不丢规则或历史；通知选择只清理指定ID',async()=>{
+ const dir=mkdtempSync(join(tmpdir(),'forget-transaction-')),app=await createApp({password:'forget-fixture',dbPath:join(dir,'db.sqlite'),disableExternal:true,disableTelegram:true}),db=app.db,a=randomUUID(),b=randomUUID(),rule=randomUUID();
+ try{for(const id of [a,b])db.prepare('INSERT INTO nodes(id,token_hash,name,created) VALUES(?,?,?,?)').run(id,id,id,1);db.prepare('INSERT INTO settings VALUES(?,?)').run('forwarding:'+rule,JSON.stringify({id:rule,node_id:a}));db.prepare('INSERT OR REPLACE INTO settings VALUES(?,?)').run('config',JSON.stringify({notification_targets:{report:[a,b],offline:null}}));db.exec("CREATE TRIGGER prevent_forget BEFORE DELETE ON nodes BEGIN SELECT RAISE(ABORT,'fixture failure'); END;");assert.throws(()=>forgetNode(db,a));assert.ok(db.prepare('SELECT value FROM settings WHERE key=?').get('forwarding:'+rule));db.exec('DROP TRIGGER prevent_forget');forgetNode(db,a);const config=JSON.parse(db.prepare("SELECT value FROM settings WHERE key='config'").get().value);assert.deepEqual(config.notification_targets,{report:[b],offline:null});
+ }finally{await app.close();rmSync(dir,{recursive:true,force:true});}
+});

@@ -131,6 +131,7 @@ echo FIREFLY_FORWARD_ACTIVE
 `;
 }
 export function createForwarding(db,ssh,timezone=()=> 'Asia/Shanghai'){
+ let startGuard=()=>{};
  const key=id=>'forwarding:'+id;
  const sharedAgentReady=value=>{const m=/^(\d+)\.(\d+)\.(\d+)$/.exec(String(value||''));if(!m)return false;const [a,b,c]=m.slice(1).map(Number);return a>0||a===0&&(b>2||b===2&&c>=5);};
  const sharedBusy=new Set(),engineKey=id=>'forward_engine:'+id;
@@ -158,6 +159,7 @@ export function createForwarding(db,ssh,timezone=()=> 'Asia/Shanghai'){
   engineSave(nodeID,{...value,mode:job.log.includes('FIREFLY_ENGINE_EMPTY')?'legacy':migrated?'shared':value.mode,status:job.status,checked_job:job.id,log:job.log,auto_rule:null});sharedBusy.delete(nodeID);
  }
  function sharedAction(r,action,candidate){
+  if(['start','resume','edit'].includes(action))startGuard(r.node_id,action,r.id);
   const value=engineInfo(r.node_id);if(sharedBusy.has(r.node_id)||value.status==='running'||ssh.busy(r.node_id))fail(409,'该服务器正在执行转发任务');
   const node=db.prepare('SELECT * FROM nodes WHERE id=?').get(r.node_id);if(!node||!sharedAgentReady(node.last_version))fail(400,'请先更新采集端到 0.2.5 或以上，再操作转发规则');
   const payload=enginePayload(r.node_id,action,{id:r.id,...(candidate?{replacement_id:candidate.id}:{})});
@@ -219,6 +221,7 @@ export function createForwarding(db,ssh,timezone=()=> 'Asia/Shanghai'){
    }db.exec('COMMIT');}catch(e){db.exec('ROLLBACK');throw e;}return {created,skipped};
   },
   reorder(nodeID,ids,expected){if(typeof nodeID!=='string'||!db.prepare('SELECT id FROM nodes WHERE id=?').get(nodeID))fail(404,'服务器不存在');const rules=records().filter(r=>r.node_id===nodeID);if(!Array.isArray(ids)||ids.length!==rules.length||new Set(ids).size!==ids.length||ids.some(id=>!rules.some(r=>r.id===id)))fail(400,'排序必须包含该服务器的全部规则，且不能重复');if(expected!==undefined){const current=[...rules].sort((a,b)=>(a.sort??a.created??0)-(b.sort??b.created??0)||a.id.localeCompare(b.id)).map(r=>r.id);if(!Array.isArray(expected)||JSON.stringify(expected)!==JSON.stringify(current))fail(409,'规则顺序已变化，请刷新后重试');}db.exec('BEGIN IMMEDIATE');try{ids.forEach((id,index)=>save({...rules.find(r=>r.id===id),sort:index}));db.exec('COMMIT');}catch(e){db.exec('ROLLBACK');throw e;}return {ok:true};},
+  setStartGuard(fn){startGuard=fn;},assertStartAllowed(id){startGuard(id,'start','');},
   hasNode(id){return records().map(record=>reconcile(record)).filter(Boolean).some(r=>r.node_id===id);},
   add(input){if(!input||typeof input.node_id!=='string'||!/^[a-f0-9-]{36}$/.test(input.node_id))fail(400,'请选择有效服务器');if(records().length>=200)fail(400,'最多 200 条规则');const node=db.prepare('SELECT * FROM nodes WHERE id=?').get(input.node_id);if(!node)fail(404,'服务器不存在');if(!node.ssh_host||!node.ssh_password||!node.ssh_fingerprint)fail(400,'请先配置 SSH、测试连接并确认指纹');const fields=forwardingFields(input);collision(fields,node.id);const r={id:randomUUID(),node_id:node.id,...fields,sort:Math.max(-1,...records().filter(r=>r.node_id===node.id).map(r=>r.sort??r.created??0))+1,state:'not_deployed',installed:false,created:Math.floor(Date.now()/1000)};save(r);return r;},
   action(id,action){const r=records().find(r=>r.id===id);if(!r)fail(404,'规则不存在');if(!['start','resume','stop','status','remove'].includes(action))fail(400,'转发操作无效');if(r.pending_edit&&action!=='remove')fail(409,'编辑任务未完成，请重新编辑部署，或删除规则后重建');if(action==='remove'&&!r.job_id&&r.state==='not_deployed'){erase(id);return {removed:true};}return sharedAction(r,action);}

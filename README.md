@@ -32,7 +32,7 @@ bash -o pipefail -c 'curl --proto "=https" --tlsv1.2 -fsS https://raw.githubuser
 - [插件开发](docs/wiki/Plugin-Development.md) · [GitHub Wiki](https://github.com/thepigeonstar/FireflyProbe/wiki)
 - [更新记录](CHANGELOG.md) · [验证记录](verification.md)
 
-主控：Node.js 24、SQLite、Docker。采集端：FireflyProbe 0.2.6，Go、systemd / OpenRC、vnStat。
+主控：Node.js 24、SQLite、Docker。采集端：FireflyProbe 0.2.7，Go、systemd / OpenRC、vnStat。
 
 卸载主控（保留配置与数据）：
 

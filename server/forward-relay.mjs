@@ -36,6 +36,7 @@ export function createForwardRelay(db,forwarding,ssh,getNodes){
   view,connection,latest(rule){const current=forwarding.list().find(r=>r.id===rule),p=all().filter(p=>p.source.id===rule||p.entry_id===rule||current?.replaced_id===p.source.id&&current?.job_id===p.entry_job).sort((a,b)=>b.created-a.created)[0];return p?view(p.id):null;},
   begin(rule,input){
    const source=sourceRule(rule,input),rules=forwarding.list(),previous=linked(source),target=previous?previous.relay:source;
+   forwarding.assertStartAllowed(source.node_id);
    if(source.node_id===input.node_id)fail(400,'中转服务器不能是入口服务器');readyNode(source.node_id);const node=readyNode(input.node_id);
    if(['localhost','::1','0:0:0:0:0:0:0:1','0.0.0.0','::'].includes(target.target_host)||/^127\./.test(target.target_host))fail(400,'原目标是入口本机地址，请先改为中转服务器能够访问的落地地址');
    const fields=forwardingFields({name:(source.name||'转发').slice(0,65)+' · 中转',protocol:source.protocol,listen_port:input.listen_port,target_host:target.target_host,target_port:target.target_port});

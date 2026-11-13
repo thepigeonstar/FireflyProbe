@@ -54,7 +54,13 @@ function managementServers(){
 $('#server-search').addEventListener('input',managementServers);$('#server-status').addEventListener('change',managementServers);
 function managementUpdateAvailable(node){const parse=value=>/^\d+\.\d+\.\d+$/.test(value||'')?value.split('.').map(Number):null,a=parse(node.last_version),b=parse(state.agent_version);if(!a||!b)return false;for(let i=0;i<3;i++){if(a[i]!==b[i])return a[i]<b[i];}return false;}
 async function managementCopyUpdate(){const command=installAgentCommand(location.origin,'--upgrade');try{await navigator.clipboard.writeText(command);toast('更新命令已复制，在对应服务器以 root 执行');}catch{const dialog=$('#ssh-dialog');$('#ssh-title').textContent='采集端更新命令';$('#ssh-result').textContent='请复制下面的命令，在对应服务器以 root 执行。';$('#ssh-log').textContent=command;dialog.showModal();}}
-async function managementDeleteNode(id){const node=state.nodes.find(n=>n.id===id);if(!node||!confirm(`删除服务器“${node.name}”？主控中的流量与趋势历史将永久删除，服务器上的采集端不会自动卸载。`))return;try{await api('/api/nodes/'+id,{method:'DELETE'});await refresh();toast('服务器已删除');}catch(e){toast(e.message);}}
+async function managementDeleteNode(id){
+ const node=state.nodes.find(n=>n.id===id);if(!node)return;
+ const dialog=$('#ssh-dialog');$('#ssh-title').textContent='删除服务器';$('#ssh-result').textContent=node.name;$('#ssh-log').hidden=true;
+ const content=document.createElement('div');content.id='node-delete-options';content.innerHTML=`<p class="error">删除服务器及主控中的流量、趋势历史，无法撤销。</p><label class="check"><input type="checkbox" id="node-delete-local">失效服务器直接删除</label><p class="muted">勾选后，一并清理该服务器在主控中的转发配置和转发历史，无需连接 SSH。远端采集端、转发服务不会卸载；其他服务器引用的转发地址不会自动修改。</p><div class="form-actions"><button type="button" class="secondary danger-button" id="node-delete-confirm">确认删除</button></div>`;
+ $('#node-delete-options')?.remove();$('#ssh-log').after(content);dialog.addEventListener('close',()=>{content.remove();$('#ssh-log').hidden=false;},{once:true});dialog.showModal();
+ $('#node-delete-confirm').onclick=async event=>{const local=$('#node-delete-local').checked;if(!confirm(local?`仅从主控删除“${node.name}”及其转发配置和全部历史？远端服务不会卸载。`:`删除服务器“${node.name}”及监控历史？存在转发规则时需先清理。`))return;event.target.disabled=true;try{const result=await api('/api/nodes/'+id+(local?'?mode=forget':''),{method:'DELETE',...(local?{body:JSON.stringify({confirmation:id})}:{})});dialog.close();await refresh();toast(result.message||'服务器已删除');}catch(e){toast(e.message);event.target.disabled=false;}};
+}
 async function managementShowJob(id){const n=state.nodes.find(x=>x.id===id);if(!n?.ssh_job)return;$('#ssh-title').textContent=n.name+' · 部署日志';$('#ssh-dialog').showModal();try{const job=await api('/api/ssh/jobs/'+n.ssh_job.id);$('#ssh-log').textContent=job.log;$('#ssh-result').textContent={running:'部署正在进行…',success:'部署完成',failed:'部署失败或中止'}[job.status];}catch(e){$('#ssh-result').textContent=e.message;}}
 let managementPolling=null;
 async function managementSSH(id,deploy){

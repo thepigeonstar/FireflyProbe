@@ -36,10 +36,12 @@ docker run --rm -v "$scratch:/fixture" alpine:3.22 sh -eu -c '
   test ! -f /opt/lightprobe/agent
   python3 -c "import json; c=json.load(open(\"/etc/firefly-probe-agent.json\")); assert c[\"history_start\"]==\"2026-01-01\" and c[\"custom\"]==\"preserved\""
   for attempt in $(seq 1 30); do
-    if test -s /fixture/report.json; then break; fi
+    if test -s /fixture/report.json && python3 -c "import json; from datetime import datetime; from zoneinfo import ZoneInfo; r=json.load(open(\"/fixture/report.json\")); assert r.get(\"history_timezone\")==\"Asia/Shanghai\" and not r.get(\"history_error\") and any(d[\"date\"]==datetime.now(ZoneInfo(\"Asia/Shanghai\")).strftime(\"%Y-%m-%d\") for d in r.get(\"days\",[]))" >/dev/null 2>&1; then break; fi
     sleep 1
   done
   test -s /fixture/report.json
+  python3 -c "import json; from datetime import datetime; from zoneinfo import ZoneInfo; r=json.load(open(\"/fixture/report.json\")); assert not r.get(\"history_error\"); assert any(d[\"date\"]==datetime.now(ZoneInfo(\"Asia/Shanghai\")).strftime(\"%Y-%m-%d\") for d in r[\"days\"])"
+  test -f /var/lib/firefly-probe/first-day.json
   before=$(sha256sum /etc/firefly-probe-agent.json | cut -d " " -f 1)
   bash /fixture/install.sh --config /fixture/config.json --binary /fixture/agent
   after=$(sha256sum /etc/firefly-probe-agent.json | cut -d " " -f 1)

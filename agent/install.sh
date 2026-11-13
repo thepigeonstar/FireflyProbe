@@ -39,6 +39,7 @@ rollback_agent_migration() {
   restore_agent_file /opt/lightprobe/agent old-binary
   restore_agent_file /etc/systemd/system/lightprobe-agent.service old-systemd
   restore_agent_file /etc/init.d/lightprobe-agent old-openrc
+  restore_agent_file /var/lib/firefly-probe/first-day.json first-day
   if [[ "$migration_started" == true ]]; then
     if [[ "$ID" == alpine ]]; then
       [[ "$old_enabled" != true ]] || rc-update add lightprobe-agent default
@@ -67,6 +68,7 @@ prepare_agent_migration() {
   backup_agent_file /opt/lightprobe/agent old-binary
   backup_agent_file /etc/systemd/system/lightprobe-agent.service old-systemd
   backup_agent_file /etc/init.d/lightprobe-agent old-openrc
+  backup_agent_file /var/lib/firefly-probe/first-day.json first-day
   if [[ "$ID" == alpine ]]; then
     if [[ -f /etc/init.d/lightprobe-agent ]] && rc-service lightprobe-agent status >/dev/null 2>&1; then old_active=true; fi
     [[ ! -e /etc/runlevels/default/lightprobe-agent ]] || old_enabled=true
@@ -173,7 +175,7 @@ if [[ -f /etc/vnstat.conf ]] && grep -qE '^UseUTC[[:space:]]+1([[:space:]]|$)' /
 history_start=$(TZ="$zone" date +%F)
 if [[ "$previous_zone" != "$zone" ]]; then
   history_start=$(TZ="$zone" date -d tomorrow +%F)
-  echo "vnStat 统计时区将改为 ${zone}（不修改全局系统时区）。为避免混合旧时区数据，从 ${history_start} 开始接收日流量。"
+  echo "统计时区同步为 ${zone}（不修改全局系统时区）。安装当天从当前网卡计数开始记录；旧时区日桶不混入今天。"
 fi
 if [[ "$ID" == alpine ]]; then
   install -d -m 0755 /etc/conf.d
@@ -188,9 +190,11 @@ else
 fi
 # Preserve history_start when reinstalling with the same node credentials.
 phase='配置网卡和流量历史'
-python3 - "$config_path" "$zone" "$history_start" <<'PY'
-import json, os, sys, urllib.request, subprocess, re
-source, zone, start = sys.argv[1:]
+python3 - "$config_path" "$zone" "$history_start" "$previous_zone" <<'PY'
+import json, os, sys, urllib.request, subprocess, re, hashlib
+from datetime import datetime
+from zoneinfo import ZoneInfo
+source, zone, start, previous_zone = sys.argv[1:]
 with open(source, encoding='utf-8-sig') as f: cfg = json.load(f)
 request = urllib.request.Request(cfg['server'].rstrip('/') + '/api/agent/config', headers={'Authorization': 'Bearer ' + cfg['token']})
 try:
@@ -216,11 +220,45 @@ for old in installed:
         cfg = {**old, **cfg}
         if old.get('vnstat_timezone') == zone: start = old.get('history_start', start)
 cfg.update(vnstat_timezone=zone, history_start=start)
+
+# Bridge the installation day using persistent interface deltas, without relabelling old timezone buckets.
+folder = '/var/lib/firefly-probe'
+os.makedirs(folder, mode=0o700, exist_ok=True)
+os.chmod(folder, 0o700)
+checkpoint = folder + '/first-day.json'
+today = datetime.now(ZoneInfo(zone)).strftime('%Y-%m-%d')
+identity = hashlib.sha256((cfg['server']+'\n'+cfg['token']).encode()).hexdigest()
+old_state = None
+if os.path.isfile(checkpoint):
+    with open(checkpoint) as f: old_state = json.load(f)
+if not old_state or any(old_state.get(k) != v for k,v in {'identity':identity,'date':today,'interface':iface,'timezone':zone}.items()):
+    base = remote.get('today', {})
+    rx = tx = 0
+    if base.get('date') == today and base.get('interface', '') in ('', iface):
+        rx, tx = int(base.get('rx', 0)), int(base.get('tx', 0))
+    if previous_zone == zone:
+        try:
+            data = json.loads(subprocess.check_output(['vnstat','--config','/etc/vnstat.conf','-i',iface,'--json','d','1'], env={**os.environ,'TZ':zone}, text=True))
+            for entry in data.get('interfaces', []):
+                if entry.get('name') != iface: continue
+                for day in entry.get('traffic', {}).get('day', []):
+                    date = day['date']
+                    if '%04d-%02d-%02d' % (date['year'],date['month'],date['day']) == today:
+                        rx, tx = max(rx,int(day['rx'])), max(tx,int(day['tx']))
+        except (OSError, ValueError, KeyError, subprocess.SubprocessError): pass
+    def counter(name):
+        with open('/sys/class/net/'+iface+'/statistics/'+name) as f: return int(f.read())
+    if not (0 <= rx <= 8e15 and 0 <= tx <= 8e15): raise SystemExit('首日流量基线无效，未修改配置。')
+    with open('/proc/sys/kernel/random/boot_id') as f: boot = f.read().strip()
+    state = dict(identity=identity,date=today,interface=iface,timezone=zone,boot=boot,last_rx=counter('rx_bytes'),last_tx=counter('tx_bytes'),rx=rx,tx=tx)
+    with open(checkpoint+'.new','w') as f: json.dump(state,f)
+    os.chmod(checkpoint+'.new',0o600)
+    os.replace(checkpoint+'.new',checkpoint)
 temporary = old_path + '.new'
 with open(temporary, 'w') as f: json.dump(cfg, f, indent=2)
 os.chmod(temporary, 0o600)
 os.replace(temporary, old_path)
-print('统计网卡：' + iface + '；日流量起始日期：' + start)
+print('统计网卡：' + iface + '；统计时区：' + zone + '；安装当日即时统计已开启；历史日流量起始日期：' + start)
 PY
 # Retain at least 730 daily buckets locally so outages can be backfilled.
 if [[ -f /etc/vnstat.conf ]]; then
@@ -295,6 +333,7 @@ User=root
 UMask=0077
 NoNewPrivileges=true
 ProtectSystem=strict
+ReadWritePaths=/var/lib/firefly-probe
 ProtectHome=true
 PrivateTmp=true
 ProtectKernelTunables=true

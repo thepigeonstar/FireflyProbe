@@ -23,7 +23,7 @@ import (
 	"time"
 )
 
-const version = "0.2.6"
+const version = "0.2.7"
 
 type Config struct {
 	Server         string `json:"server"`
@@ -457,7 +457,9 @@ func main() {
 		if f := strings.Fields(string(uptime)); len(f) > 0 {
 			report.Uptime, _ = strconv.ParseFloat(f[0], 64)
 		}
+		historyRead := false
 		if historyAt.IsZero() || time.Since(historyAt) >= 5*time.Minute {
+			historyRead = true
 			historyCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 			days, historyErr := collectDays(historyCtx, iface, remote, cfg.HistoryStart)
 			cancel()
@@ -472,6 +474,27 @@ func main() {
 			if historyErr == nil && cfg.HistoryStart != "" && len(days) == 0 {
 				report.HistoryError = "waiting for first daily traffic sample in configured timezone"
 			}
+		}
+		bootRaw, _ := os.ReadFile("/proc/sys/kernel/random/boot_id")
+		first, firstErr := collectFirstDay("/var/lib/firefly-probe/first-day.json", cfg, iface, remote.Timezone, strings.TrimSpace(string(bootRaw)), at, current)
+		if firstErr != nil {
+			empty := []Day{}
+			report.Days = &empty
+			report.HistoryTimezone = cfg.VnstatTimezone
+			report.HistoryError = firstErr.Error()
+		} else if first != nil {
+			days := []Day{}
+			if report.Days != nil {
+				for _, d := range *report.Days {
+					if d.Date != first.Date {
+						days = append(days, d)
+					}
+				}
+			}
+			days = append(days, *first)
+			report.Days = &days
+			report.HistoryTimezone = cfg.VnstatTimezone
+			report.HistoryError = ""
 		}
 		if *check {
 			data, _ := json.MarshalIndent(report, "", "  ")
@@ -488,7 +511,7 @@ func main() {
 			}
 		} else {
 			backoff = 0
-			if report.Days != nil {
+			if historyRead {
 				historyAt = time.Now()
 			}
 		}
