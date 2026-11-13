@@ -443,3 +443,10 @@ Installer locale hotfix: braced variables adjacent to Chinese punctuation in tim
 - 采集端仍0.2.7，无Go或Linux服务部署逻辑变更。未连接生产或推送GitHub，生产服务器的实际SSH算法/authorized_keys/sudo权限仍需实际测试。此前真实GOST轮转仍待Linux CI，不把本次SSH协议测试等同于Linux安装测试。
 
 - 最终146项全量通过，新增清除私钥后仍可不配置SSH继续编辑节点的回归用例。连接参数在创建Client及占用连接槽位前解析，格式或解密错误不占用SSH连接名额；随后真实SSH/密码/换址18项检查通过。
+
+## v0.2.59 · 2026-11-13
+
+- 148项Node全量测试通过（work/test-0259.log），新增tests/forward-limit-badge.test.mjs验证状态优先级、关闭后保留暂停、停止/恢复失败分别标识、停止任务未完成不显示已暂停、已关闭且恢复后隐藏、使用计费口径、状态损坏不阻断摘要、摘要读取不调SSH/不写状态/不递归调用snapshot。
+- 本地真实HTTP / SQLite验证管理员节点及转发列表摘要一致且无原始任务日志，公开API及插件读取不增加保护配置，未经登录不能读取管理列表。
+- Chrome真实本地API验证六种状态在仪表盘卡片/列表、服务器列表、转发侧栏均可见，悬停850 / 900 GiB按仅上传口径、点击定位正确服务器、绿色在线状态保留、键盘Enter、无历史点击穿透/嵌套button、保存后立即更新、关闭后仍显示暂停、公开页无标签、手机/深色无溢出且无页面异常。work/browser-0259.mjs，截图outputs/流量保护标识-v0.2.59.png。
+- 未修改自动暂停/恢复执行逻辑、GOST、采集端或系统服务，仅添加后台只读状态摘要及入口；采集端仍0.2.7。浏览器使用本地测试状态，未连接生产SSH或推送GitHub。

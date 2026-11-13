@@ -8,7 +8,15 @@ export function createForwardLimit(db,forwarding,ssh,getNodes,timezone,notify=()
  const config=id=>read(configKey(id))||{enabled:false,bytes:0},state=id=>read(stateKey(id));
  function usage(n,stamp){const today=dayKey(new Date(stamp*1000),timezone()),hasToday=db.prepare('SELECT 1 FROM daily WHERE node_id=? AND date=? LIMIT 1').get(n.id,today);return {bytes:n.traffic.measured,period:n.traffic.bounds.start,end:n.traffic.bounds.end,valid:Boolean(n.enabled&&n.status==='online'&&n.history_seen&&stamp-n.history_seen>=0&&stamp-n.history_seen<900&&!n.history_error&&n.history_timezone===timezone()&&dayKey(new Date(n.history_seen*1000),timezone())===today&&hasToday)};}
  function node(id){const n=getNodes().find(n=>n.id===id);if(!n)throw Object.assign(new Error('服务器不存在'),{status:404});return n;}
- function view(id,stamp=Math.floor(Date.now()/1000)){const n=node(id);return {config:config(id),state:state(id),usage:usage(n,stamp),timezone:timezone(),billing_mode:n.billing_mode};}
+ function summary(n,stamp=Math.floor(Date.now()/1000)){
+  try{
+  const c=config(n.id),s=state(n.id);if(!c.enabled&&!s?.latched)return null;
+  const u=usage(n,stamp),failed=s?.status==='error'||s?.items?.some(i=>i.status==='failed'),pending=s?.items?.some(i=>['queued','running'].includes(i.status));
+  const status=!s?.latched?'protected':failed?(s.operation==='resume'?'restore_failed':'pause_failed'):s.operation==='resume'?'resuming':s.status==='paused'&&!pending?'paused':'stopping';
+  return {status,enabled:Boolean(c.enabled),used:u.bytes,threshold:c.enabled?c.bytes:(s?.threshold||c.bytes),valid:u.valid,billing_mode:n.billing_mode};
+  }catch{return {status:'state_error',enabled:null,used:n.traffic.measured,threshold:null,valid:false,billing_mode:n.billing_mode};}
+ }
+ function view(id,stamp=Math.floor(Date.now()/1000)){const n=node(id);return {config:config(id),state:state(id),usage:usage(n,stamp),timezone:timezone(),billing_mode:n.billing_mode,summary:summary(n,stamp)};}
  function assertStartAllowed(id,action,rule){const s=state(id),c=config(id);if(!s?.latched&&!c.enabled)return;if(s?.latched&&!(s.operation==='resume'&&action==='resume'&&s.items.some(i=>i.id===rule&&i.resume)))throw Object.assign(new Error('该服务器已因流量限额暂停，请调整阈值后手动恢复'),{status:409});const n=node(id),u=usage(n,Math.floor(Date.now()/1000));if(c.enabled&&u.valid&&u.bytes>=c.bytes&&s?.operation!=='resume')throw Object.assign(new Error('账单周期计费流量已达到暂停阈值，请先调整流量暂停设置'),{status:409});}
  function observe(nodes,stamp=Math.floor(Date.now()/1000)){
   if(nodes===undefined){const active=db.prepare("SELECT key,value FROM settings WHERE key LIKE 'forward_limit:%' OR key LIKE 'forward_limit_state:%'").all().some(r=>{const v=JSON.parse(r.value);return v.enabled||v.latched;});if(!active)return;nodes=getNodes();}
@@ -42,7 +50,7 @@ export function createForwardLimit(db,forwarding,ssh,getNodes,timezone,notify=()
    put(stateKey(n.id),s);
   }
  }
- return {view,observe,assertStartAllowed,
+ return {view,summary,observe,assertStartAllowed,
   save(id,input){const n=node(id);if(typeof input?.enabled!=='boolean'||typeof input.limit_gib!=='number'||!Number.isFinite(input.limit_gib)||input.limit_gib<0||input.limit_gib*1073741824>8e15||input.enabled&&Math.round(input.limit_gib*1073741824)<1)fail('请填写有效的暂停阈值（GiB），启用时必须大于 0');if(input.enabled&&(!n.ssh_host||!hasSSHCredentials(n)||!n.ssh_fingerprint))fail('启用前请配置 SSH 并确认指纹，供主控执行暂停');const s=state(id);if(s?.operation==='resume')fail('恢复任务尚未结束，请稍后修改');put(configKey(id),{enabled:input.enabled,bytes:Math.round(input.limit_gib*1073741824)});return view(id);},
   resume(id){const n=node(id),c=config(id),s=state(id);if(!s?.latched)fail('该服务器没有流量暂停记录');if(s.items.some(i=>['queued','running','failed'].includes(i.status))||ssh.busy(id)||s.operation==='resume')fail('还有未确认完成的暂停任务，请核对日志并等待停止成功后恢复');const u=usage(n,Math.floor(Date.now()/1000));if(c.enabled&&(!u.valid||u.bytes>=c.bytes))fail('请先提高暂停阈值或关闭此功能；启用时需有效统计且当前用量低于阈值');
    if(!n.enabled||!n.ssh_host||!hasSSHCredentials(n)||!n.ssh_fingerprint)fail('请启用服务器并配置 SSH、确认指纹后恢复');
