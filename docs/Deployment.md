@@ -372,3 +372,29 @@ Debian / Ubuntu 检查：systemctl status firefly-forward-engine --no-pager。Al
 采集端部署、转发安装 / 更新 / 启停、中转配置、批量队列和流量暂停共同使用此认证设置，无需逐项配置。主机指纹核验保持启用，同机换址证明同时绑定认证方式与凭据，修改私钥或口令后需重新测试。
 
 主控重启继续使用保存的密钥。迁移主控数据时需保留 ssh-secret.key；加密远程备份包含该加密密钥并在恢复到另一主控时重新绑定加密凭据。普通 SQLite 副本无法替代加密密钥文件，不应只复制数据库就丢弃原密钥。
+
+## apt-listchanges 安装兼容（v0.2.60）
+
+日志出现 apt-listchanges --apt 失败时，软件包变更说明工具可能阻断 APT，即使软件源和下载都正常。采集端入口和依赖安装现在为该次 apt-get install 设置 DEBIAN_FRONTEND=noninteractive APT_LISTCHANGES_FRONTEND=none，并保持 --no-upgrade；不会删除系统工具、修改 APT 钩子或忽略安装错误。[Debian 官方手册](https://manpages.debian.org/trixie/apt-listchanges/apt-listchanges.1.en.html)说明 none 前端可用于跳过自动执行。
+
+先更新主控，再在服务器列表重试“一键安装/更新”，不需要更新 GOST 转发规则。当前采集端二进制仍为 0.2.7；只看 agent --version 无法判断服务器上次使用的是哪个安装脚本。旧主控尚未更新时，可以在报错的受控机以 root 执行下面的临时处理，再回后台重试：
+
+~~~bash
+DEBIAN_FRONTEND=noninteractive APT_LISTCHANGES_FRONTEND=none apt-get install -y --no-upgrade vnstat python3 ca-certificates iproute2 tzdata
+~~~
+
+该变量仅影响这一次命令，不会持久关闭变更说明。如果仍有 Segmentation fault，尤其是 python3 --version 也崩溃，需要进一步检查系统组件、内核日志和资源，不能据现有日志认定原因。APT 的真实失败仍保留非零退出码并触发采集端回滚，回滚后请检查 firefly-probe-agent（旧版为 lightprobe-agent）服务状态。
+
+## apt-listchanges 启动即崩溃（v0.2.61，替代上述 none 处理）
+
+如果设置 APT_LISTCHANGES_FRONTEND=none 后仍然 Segmentation fault，旧处理不足以绕过工具启动。v0.2.61 的两个安装入口使用相同的 POSIX Shell 函数：apt-config dump 读取当前设置，仅过滤标准 /usr/bin/apt-listchanges --apt（含 Debian 默认的退出码判断后缀），将其余 DPkg::Pre-Install-Pkgs 条目逐字写入临时配置，通过 apt-get -c 本次使用。其他 APT 钩子仍从系统配置读取，系统文件不改动；临时目录在退出时删除。
+
+这是临时绕过已知故障组件，不是修复段错误本身。自定义复合 apt-listchanges 调用和 Binary::apt-get 专用非空安装前配置拒绝自动处理，需核对后再安装。APT / dpkg 的真实失败不会忽略，仍中止并触发原有采集端回滚。请勿使用清空全部 APT 钩子或 apt-get 失败后继续的命令。
+
+先上传新代码并更新主控，再在服务器列表重试采集端“一键安装/更新”。也可单独在报错受控机以 root 运行 tools/install-agent-deps.sh，成功后重试后台部署。该脚本安装缺失依赖且不升级已有依赖，不操作转发规则、统计历史或采集端配置。命令中所用仓库分支应与实际上传分支一致：
+
+~~~bash
+bash -o pipefail -c 'curl --proto "=https" --tlsv1.2 -fsS https://raw.githubusercontent.com/thepigeonstar/FireflyProbe/main/tools/install-agent-deps.sh | sh'
+~~~
+
+[APT 配置手册](https://manpages.debian.org/trixie/apt/apt.conf.5.en.html)说明列表需通过 #clear 删除后重建；[apt-config 手册](https://manpages.debian.org/trixie/apt/apt-config.8.en.html)说明 -c 配置在默认配置之后读取。当前采集端版本号仍为 0.2.7，仅检查二进制版本不能识别安装脚本是否更新。

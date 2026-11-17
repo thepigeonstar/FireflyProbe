@@ -14,7 +14,7 @@ test('安装入口覆盖远端 Latin-1 Python 输出配置',()=>{
 });
 test('Debian 11 软件源失败保留退出码并提示退役源，不继续安装',()=>{
   const source=readFileSync(new URL('../agent/install.sh',import.meta.url),'utf8');
-  const block=source.slice(source.indexOf('  if apt-get update; then'),source.indexOf('  DEBIAN_FRONTEND=noninteractive apt-get install'));
+  const block=source.slice(source.indexOf('  if apt-get update; then'),source.indexOf('  # Install missing dependencies'));
   const run=spawnSync(bash,['-c','set -e\nID=debian; VERSION_ID=11\napt-get(){ return 100; }\n'+block+'\necho SHOULD_NOT_CONTINUE'],{encoding:'utf8'});
   assert.equal(run.status,100);
   assert.ok(run.stderr.includes('bullseye-backports'));

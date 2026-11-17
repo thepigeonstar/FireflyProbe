@@ -3,6 +3,43 @@
 set -eu
 export PYTHONUTF8=1 PYTHONIOENCODING=utf-8
 umask 077
+firefly_apt_install() (
+  set -eu
+  apt_scratch=$(mktemp -d) || exit "$?"
+  trap 'rm -rf -- "$apt_scratch"' 0
+  trap 'exit 130' INT
+  trap 'exit 143' TERM
+  # Read first; never run apt-get with a partial configuration snapshot.
+  apt-config dump > "$apt_scratch/original.conf" || exit "$?"
+  awk '
+    BEGIN { print "#clear DPkg::Pre-Install-Pkgs;" }
+    {
+      key = tolower($1)
+      value = $0
+      sub(/^[^ \t]+[ \t]+/, "", value)
+      if (key ~ /^binary::apt-get::dpkg::pre-install-pkgs(::|$)/ && value != "\"\";") {
+        print "自定义 apt-get 安装前钩子需手动核对，未执行安装。" > "/dev/stderr"
+        exit 42
+      }
+      if (key !~ /^dpkg::pre-install-pkgs(::|$)/) next
+      if (value == "\"/usr/bin/apt-listchanges --apt || test $? -lt 10\";" ||
+          value == "\"/usr/bin/apt-listchanges --apt\";") next
+      if (index(value, "apt-listchanges")) {
+        print "非标准 apt-listchanges 钩子需手动核对，未执行安装。" > "/dev/stderr"
+        exit 42
+      }
+      print
+    }
+  ' "$apt_scratch/original.conf" > "$apt_scratch/install.conf" || exit "$?"
+  echo '安装缺失依赖（仅本次跳过标准 apt-listchanges 钩子，保留其他安装检查）…'
+  if DEBIAN_FRONTEND=noninteractive APT_LISTCHANGES_FRONTEND=none \
+    apt-get -c "$apt_scratch/install.conf" install -y --no-upgrade "$@"; then
+    exit 0
+  else
+    exit "$?"
+  fi
+)
+
 [ "$(id -u)" -eq 0 ] || { echo '请使用 root 安装采集端。' >&2; exit 1; }
 server=''
 secret=''
@@ -27,7 +64,7 @@ case "$ID" in
   debian|ubuntu)
     if ! command -v bash >/dev/null || ! command -v curl >/dev/null || ! command -v python3 >/dev/null; then
       apt-get update
-      DEBIAN_FRONTEND=noninteractive apt-get install -y bash curl ca-certificates python3
+      firefly_apt_install bash curl ca-certificates python3
     fi
     ;;
   *) echo '支持 Debian 11+、Ubuntu 22.04+、Alpine 3.20+。' >&2; exit 1 ;;

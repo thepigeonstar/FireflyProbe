@@ -459,3 +459,20 @@ Installer locale hotfix: braced variables adjacent to Chinese punctuation in tim
 - 新tests/ssh-keys.test.mjs包含公钥首字节为零的确定性公开测试种子向量（索引36）、Node原生签名与ssh2解析器双向交叉验证，以及1000份原生随机密钥的完整解析和公私钥一致性检查；不重试、不跳过、不筛掉前导零样本。
 - 全量150项测试通过(work/test-0259-ci-fix.log)；同机换址真实协议套件连续10/10通过(work/ssh-fixture-stability.log)。Windows OpenSSH ssh-keygen公钥检查及指纹比对通过；私钥-y检查曾因临时文件继承ACL被系统拒绝，未改ACL/禁用检查，私钥格式与签名由独立Node/ssh2测试验证，不声称该私钥CLI检查通过。此后未执行额外生产或界面测试，应用界面及版本仍0.2.59 / agent0.2.7。
 - 尚未推送修复，原GitHub提交仍为失败状态，需用户重新上传后确认Linux CI；未连接生产。
+
+## v0.2.60 安装兼容补丁 · 2026-11-17
+
+- 用户 Debian 13 日志确认软件源刷新及 vnstat 下载成功；apt-listchanges 的 APT 安装前钩子报 Segmentation fault / 非零，APT 100 导致采集端回滚。日志不足以判定段错误的底层原因，不能归因为内存不足、源错误或 vnstat 自身崩溃。
+- agent/entry.sh 与 agent/install.sh 的依赖安装均增加命令级 APT_LISTCHANGES_FRONTEND=none。Debian trixie 官方 apt-listchanges(1) 手册明确 none 用于阻止自动运行；不永久修改 APT 配置、不删除工具、不清空其他钩子、不忽略 APT / dpkg 错误。入口安装补齐 --no-upgrade，安装器原有选项保留。主控0.2.60发布脚本，Go采集端仍0.2.7，无需为此更新GOST规则。
+- 两项新增测试执行实际安装命令，以模拟 APT 钩子检查 none 覆盖继承的 pager、DEBIAN_FRONTEND、--no-upgrade及包列表，成功后父进程变量保持 pager；模拟真实安装失败100，确认触发ERR并不继续。既有迁移回滚测试仍覆盖Debian和Alpine恢复旧身份/服务与清理半成品。软件源失败测试仍检查100和Debian11退役源提示。
+- 全量152项Node测试通过，0跳过（work/test-0260.log；运行时功能改动已完成，随后仅更新主控版本号和发布文档）；Git Bash语法与ShellCheck均通过。未修改Go或前端交互，无新增二进制或浏览器验证。
+- 当前Windows未运行真实Debian APT / apt-listchanges，模拟钩子验证不等同于复现原服务器的段错误。none不保证绕过Python启动/导入层的崩溃；若仍失败需检查系统组件及日志。未推送GitHub、未连接生产，实际服务器安装结果需用户上传、更新主控后重试。
+
+## v0.2.61 apt-listchanges 启动崩溃的临时钩子隔离 · 2026-11-17
+
+- 用户实际重试证明v0.2.60设置none后仍然段错误，不能把前端选项等同于完全绕过Python/工具启动。底层段错误原因尚不明。本次替代该方法，避免只修改前端后继续声称已经解决原服务器故障。
+- entry.sh / install.sh内嵌一致的POSIX firefly_apt_install子Shell函数；tools/install-agent-deps.sh为独立root入口，另提供outputs/firefly-install-agent-deps.sh供立即上传使用。无外部Python依赖。apt-config dump完整成功后使用awk过滤，临时配置#clear DPkg::Pre-Install-Pkgs后逐字保留其余条目及顺序，只排除标准/usr/bin/apt-listchanges --apt（可带默认退出码判断）。apt-get -c在默认配置后应用，不改系统文件；其他DPkg钩子及Tools::Options保持原系统配置。
+- 自定义复合命令或Binary::apt-get非空安装前钩子覆盖拒绝自动处理（42），避免不完整合并、漏执行其他检查。所有准备步骤显式保留失败退出码，不在部分配置下执行apt；实际apt错误保留100，外层ERR回滚只触发一次。子Shell临时文件在正常/错误/INT/TERM退出清理，父环境不改变。调用仍--no-upgrade。
+- 新tests/apt-deps.test.mjs四项验证三份函数相同、模拟不理会none的崩溃钩子、原始配置保持、其他钩子逐字保留、无hook情况、两个标准形式、自定义拒绝、读取/安装失败和清理、Bash继承ERR下仅一次回滚；替代v0.2.60两项仅前端验证。全量154项Node通过/0跳过(work/test-0261.log)，脚本语法与ShellCheck通过。
+- 新tests/apt-deps.test.sh通过docker run -i启动真实Debian trixie APT，构造无依赖本地.deb及退出139的模拟apt-listchanges程序；先证明none控制组失败，再验证过滤后安装成功、另一个命名钩子和Pre-Invoke继续执行、安装其他钩子失败仍100、apt-config前后完全一致。工作流Docker构建后新增此步骤。当前Windows无Docker，未执行该真实APT集成，需用户上传GitHub后确认，不能声称原机器已经修复。
+- 主控0.2.61发布更新脚本，采集端二进制0.2.7不变；未操作转发规则、统计历史或生产机器。完整/更新/latest包与发布目录同步，用户仍自行上传和执行永久主控更新命令。

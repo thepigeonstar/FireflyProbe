@@ -24,6 +24,7 @@ jobs:
       - run: sudo bash tests/install-master.test.sh
       - run: bash tests/docker-bootstrap.test.sh
       - run: docker build -t lightprobe-check .
+      - run: bash tests/apt-deps.test.sh
       - run: bash tests/alpine-install.test.sh
       - uses: actions/cache@v4
         with:

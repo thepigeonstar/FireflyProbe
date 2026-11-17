@@ -2,6 +2,43 @@
 set -Eeuo pipefail
 export PYTHONUTF8=1 PYTHONIOENCODING=utf-8
 umask 077
+firefly_apt_install() (
+  set -eu
+  apt_scratch=$(mktemp -d) || exit "$?"
+  trap 'rm -rf -- "$apt_scratch"' 0
+  trap 'exit 130' INT
+  trap 'exit 143' TERM
+  # Read first; never run apt-get with a partial configuration snapshot.
+  apt-config dump > "$apt_scratch/original.conf" || exit "$?"
+  awk '
+    BEGIN { print "#clear DPkg::Pre-Install-Pkgs;" }
+    {
+      key = tolower($1)
+      value = $0
+      sub(/^[^ \t]+[ \t]+/, "", value)
+      if (key ~ /^binary::apt-get::dpkg::pre-install-pkgs(::|$)/ && value != "\"\";") {
+        print "自定义 apt-get 安装前钩子需手动核对，未执行安装。" > "/dev/stderr"
+        exit 42
+      }
+      if (key !~ /^dpkg::pre-install-pkgs(::|$)/) next
+      if (value == "\"/usr/bin/apt-listchanges --apt || test $? -lt 10\";" ||
+          value == "\"/usr/bin/apt-listchanges --apt\";") next
+      if (index(value, "apt-listchanges")) {
+        print "非标准 apt-listchanges 钩子需手动核对，未执行安装。" > "/dev/stderr"
+        exit 42
+      }
+      print
+    }
+  ' "$apt_scratch/original.conf" > "$apt_scratch/install.conf" || exit "$?"
+  echo '安装缺失依赖（仅本次跳过标准 apt-listchanges 钩子，保留其他安装检查）…'
+  if DEBIAN_FRONTEND=noninteractive APT_LISTCHANGES_FRONTEND=none \
+    apt-get -c "$apt_scratch/install.conf" install -y --no-upgrade "$@"; then
+    exit 0
+  else
+    exit "$?"
+  fi
+)
+
 migration_backup=''
 backup_ready=false
 migration_started=false
@@ -148,7 +185,7 @@ else
     exit "$status"
   fi
   # Install missing dependencies without coupling agent deployment to OS upgrades.
-  DEBIAN_FRONTEND=noninteractive apt-get install -y --no-upgrade vnstat python3 ca-certificates iproute2 tzdata
+  firefly_apt_install vnstat python3 ca-certificates iproute2 tzdata
 fi
 phase='检查 vnStat 版本和配置选项'
 vnstat_version=$(vnstat --version | awk '$1 == "vnStat" && $2 ~ /^[0-9]+\.[0-9]+/ {print $2; exit}')
