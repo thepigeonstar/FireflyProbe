@@ -476,3 +476,12 @@ Installer locale hotfix: braced variables adjacent to Chinese punctuation in tim
 - 新tests/apt-deps.test.mjs四项验证三份函数相同、模拟不理会none的崩溃钩子、原始配置保持、其他钩子逐字保留、无hook情况、两个标准形式、自定义拒绝、读取/安装失败和清理、Bash继承ERR下仅一次回滚；替代v0.2.60两项仅前端验证。全量154项Node通过/0跳过(work/test-0261.log)，脚本语法与ShellCheck通过。
 - 新tests/apt-deps.test.sh通过docker run -i启动真实Debian trixie APT，构造无依赖本地.deb及退出139的模拟apt-listchanges程序；先证明none控制组失败，再验证过滤后安装成功、另一个命名钩子和Pre-Invoke继续执行、安装其他钩子失败仍100、apt-config前后完全一致。工作流Docker构建后新增此步骤。当前Windows无Docker，未执行该真实APT集成，需用户上传GitHub后确认，不能声称原机器已经修复。
 - 主控0.2.61发布更新脚本，采集端二进制0.2.7不变；未操作转发规则、统计历史或生产机器。完整/更新/latest包与发布目录同步，用户仍自行上传和执行永久主控更新命令。
+
+## v0.2.62 同组规则编辑与服务器地址 · 2026-11-19
+
+- 新增server/forward-group-edit.mjs生成服务端同组计划，以旧端口+协议匹配，forwardingFields校验修改字段；完整分组及规则快照SHA256绑定预览确认。仅管理员POST /api/forwarding/:id/group-edit（preview true只读预览，否则确认执行），沿用认证/CSRF和批量互斥。
+- forward-batch复用串行执行器增加group_edit，已部署调用原forwarding.update，草稿更新不执行SSH；缺失规则等显示跳过，不自动新增。执行时重新检查成员、规则修订及凭据就绪。来源任务失败后继续其余服务器，范围在确认前明示。关闭/重启行为与既有批量队列相同。
+- /api/forwarding管理员节点列表增加ssh_host，左侧及分组成员名称下显示；公开接口保持白名单。UI预览、返回保留表单、确认进度沿用既有弹窗。
+- 新增4项测试覆盖端口协议匹配/跨组/缺失/冲突/SSH跳过、预览无写入、字段及成员变化拒绝、草稿实际SQLite更新、顺序/失败继续/互斥/队列期间规则变化拒绝，以及API未登录/CSRF/公开地址隔离。全量158项Node测试通过、0跳过(work/test-0262.log)。
+- Chrome实际本地主控API/SQLite验证地址、分组成员地址、缺失规则跳过及组外不参与、返回保留表单、两台草稿同步、进度、手机窄屏与深色无横向溢出、无pageerror；截图outputs/同组规则同步-v0.2.62.png，脚本work/browser-0262.mjs。浏览器只改测试草稿，无生产SSH；已部署编辑沿用原真实SSH编辑测试及新队列模拟，本次没有新增Linux实机部署结果。
+- 主控0.2.62、采集端0.2.7。未推送GitHub或连接生产；需用户上传并确认CI，再更新主控。此前Debian主机Python文件校验异常属于远端系统故障，独立恢复脚本仍在outputs/repair-python313.sh，尚未收到修复成功结果。
