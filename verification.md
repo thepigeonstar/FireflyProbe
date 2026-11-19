@@ -485,3 +485,11 @@ Installer locale hotfix: braced variables adjacent to Chinese punctuation in tim
 - 新增4项测试覆盖端口协议匹配/跨组/缺失/冲突/SSH跳过、预览无写入、字段及成员变化拒绝、草稿实际SQLite更新、顺序/失败继续/互斥/队列期间规则变化拒绝，以及API未登录/CSRF/公开地址隔离。全量158项Node测试通过、0跳过(work/test-0262.log)。
 - Chrome实际本地主控API/SQLite验证地址、分组成员地址、缺失规则跳过及组外不参与、返回保留表单、两台草稿同步、进度、手机窄屏与深色无横向溢出、无pageerror；截图outputs/同组规则同步-v0.2.62.png，脚本work/browser-0262.mjs。浏览器只改测试草稿，无生产SSH；已部署编辑沿用原真实SSH编辑测试及新队列模拟，本次没有新增Linux实机部署结果。
 - 主控0.2.62、采集端0.2.7。未推送GitHub或连接生产；需用户上传并确认CI，再更新主控。此前Debian主机Python文件校验异常属于远端系统故障，独立恢复脚本仍在outputs/repair-python313.sh，尚未收到修复成功结果。
+
+## v0.2.62 CI补丁：POSIX Shell命令替身 · 2026-11-19
+
+- 用户提交9bee220d61d82ce22608e97801cd8bddb1d966fc，Check #73 / run44521605281 / job135551350968失败于Run npm test；公开API可定位步骤，日志下载接口403，具体错误由用户完整输出提供：158项中155通过、3失败，全部在tests/apt-deps.test.mjs，sh: 4: Syntax error: Bad function name。
+- 原测试在默认sh中定义apt-config()和apt-get()函数，Git Bash接受但Ubuntu /bin/sh（dash）拒绝。生产firefly_apt_install函数名只有合法字符，不受该语法错误影响；同组同步测试已通过。修复测试替身，保留sh执行而非改用Bash规避：创建独立临时目录中的apt-config和apt-get可执行脚本，以PATH注入，使用exit传递模拟错误码；正常及错误后清理两处临时目录。
+- 原检查完整保留：模拟变更说明崩溃、其他钩子逐字保留、命令环境/参数、APT100及配置读取100、未知钩子42、父环境和临时文件清理、Bash ERR仅触发一次回滚。未跳过或放宽用例。
+- 本地完整158项通过，0跳过（work/test-0262-ci-shell.log）。本机WSL未安装可用Linux、无Docker，未运行实际dash/真实APT；上传后GitHub仍需重新执行原sh测试与后续Debian APT集成。没有宣称旧提交已转绿。
+- 仅测试文件及发布/交接文档变化，主控仍0.2.62，采集端0.2.7。重新生成完整/更新/latest包并镜像发布目录，用户执行原上传命令触发新提交CI；未推送、未连接生产。无需因此改变运行中的主控功能或重新安装采集端。

@@ -13,30 +13,34 @@ const required='DPkg::Pre-Install-Pkgs::required "/fixture/required-check";';
 const hook='DPkg::Pre-Install-Pkgs:: "/usr/bin/apt-listchanges --apt || test $? -lt 10";';
 const original=['DPkg "";','DPkg::Pre-Install-Pkgs "";',hook,required,'DPkg::Pre-Invoke:: "/fixture/pre-invoke";','DPkg::Tools::Options::/usr/bin/apt-listchanges::Version "2";'].join('\n')+'\n';
 function run(dump=original,status=0,dumpStatus=0,shell=sh){
- const dir=mkdtempSync(join(tmpdir(),'firefly-apt-')),input=join(dir,'original');writeFileSync(input,dump);
+ const dir=mkdtempSync(join(tmpdir(),'firefly-apt-')),mock=mkdtempSync(join(tmpdir(),'firefly-apt-bin-')),input=join(dir,'original');writeFileSync(input,dump);
+ // Real command files work with dash too; hyphenated shell function names do not.
+ writeFileSync(join(mock,'apt-config'),'#!/bin/sh\nset -eu\n[ "$*" = dump ] || exit 97\ncat "$FIXTURE_INPUT"\nexit "$FIXTURE_DUMP_STATUS"\n',{mode:0o755});
+ writeFileSync(join(mock,'apt-get'),`#!/bin/sh
+set -eu
+[ "$1" = -c ] || exit 97
+cp "$2" "$FIXTURE_RESULT"
+shift 2
+[ "$DEBIAN_FRONTEND" = noninteractive ] && [ "$APT_LISTCHANGES_FRONTEND" = none ] || exit 98
+[ "$*" = 'install -y --no-upgrade vnstat python3 ca-certificates iproute2 tzdata' ] || exit 96
+# Ignore the frontend variable: any surviving crashing hook must fail the test.
+if grep -q apt-listchanges "$FIXTURE_RESULT"; then exit 139; fi
+printf 'APT_CALLED\\n'
+exit "$FIXTURE_APT_STATUS"
+`,{mode:0o755});
  const script=`set -eu
 if [ -n "${'${BASH_VERSION:-}'}" ]; then set -E; trap 'echo ROLLBACK_REQUIRED >&2' ERR; fi
 export APT_LISTCHANGES_FRONTEND=pager
-apt-config(){ cat "$FIXTURE_INPUT"; return "$FIXTURE_DUMP_STATUS"; }
-apt-get(){
-  [ "$1" = -c ] || return 97
-  cp "$2" "$FIXTURE_RESULT"
-  shift 2
-  [ "$DEBIAN_FRONTEND" = noninteractive ] && [ "$APT_LISTCHANGES_FRONTEND" = none ] || return 98
-  [ "$*" = 'install -y --no-upgrade vnstat python3 ca-certificates iproute2 tzdata' ] || return 96
-  # The crashing hook ignores the frontend variable: it must never be invoked.
-  if grep -q apt-listchanges "$FIXTURE_RESULT"; then return 139; fi
-  printf 'APT_CALLED\\n'
-  return "$FIXTURE_APT_STATUS"
-}
+PATH="$FIXTURE_BIN:$PATH"
+export PATH
 ${fn}
 firefly_apt_install vnstat python3 ca-certificates iproute2 tzdata
 printf 'parent:%s' "$APT_LISTCHANGES_FRONTEND"
 `;
  try{
-  const result=spawnSync(shell,['-c',script],{encoding:'utf8',env:{...process.env,TMPDIR:shellPath(dir),FIXTURE_INPUT:shellPath(input),FIXTURE_RESULT:shellPath(join(dir,'result')),FIXTURE_APT_STATUS:String(status),FIXTURE_DUMP_STATUS:String(dumpStatus)}});
+  const result=spawnSync(shell,['-c',script],{encoding:'utf8',env:{...process.env,TMPDIR:shellPath(dir),FIXTURE_BIN:shellPath(mock),FIXTURE_INPUT:shellPath(input),FIXTURE_RESULT:shellPath(join(dir,'result')),FIXTURE_APT_STATUS:String(status),FIXTURE_DUMP_STATUS:String(dumpStatus)}});
   const files=readdirSync(dir);return {...result,config:files.includes('result')?readFileSync(join(dir,'result'),'utf8'):null,files,original:readFileSync(input,'utf8')};
- }finally{rmSync(dir,{recursive:true,force:true});}
+ }finally{rmSync(dir,{recursive:true,force:true});rmSync(mock,{recursive:true,force:true});}
 }
 test('两安装入口和独立修复脚本使用同一临时APT钩子过滤，调用缺失依赖安装',()=>{
  assert.ok(fn.startsWith('firefly_apt_install() ('));
