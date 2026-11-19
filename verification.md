@@ -493,3 +493,11 @@ Installer locale hotfix: braced variables adjacent to Chinese punctuation in tim
 - 原检查完整保留：模拟变更说明崩溃、其他钩子逐字保留、命令环境/参数、APT100及配置读取100、未知钩子42、父环境和临时文件清理、Bash ERR仅触发一次回滚。未跳过或放宽用例。
 - 本地完整158项通过，0跳过（work/test-0262-ci-shell.log）。本机WSL未安装可用Linux、无Docker，未运行实际dash/真实APT；上传后GitHub仍需重新执行原sh测试与后续Debian APT集成。没有宣称旧提交已转绿。
 - 仅测试文件及发布/交接文档变化，主控仍0.2.62，采集端0.2.7。重新生成完整/更新/latest包并镜像发布目录，用户执行原上传命令触发新提交CI；未推送、未连接生产。无需因此改变运行中的主控功能或重新安装采集端。
+
+## v0.2.62 CI补丁：真实APT失败场景使用新包 · 2026-11-19
+
+- 新提交a9095d15e757f806e3897df0d3740d64e00d9c42，run44537491226/job135606670268已通过npm、Python、Go、Shell、主控安装脚本及Docker构建；失败转到tests/apt-deps.test.sh。用户第一次附件仍是旧npm日志，公开API确认步骤变化，详细日志接口403；随后用户提供完整APT输出。
+- 该实际Debian trixie输出证明：控制组的apt-listchanges失败符合预期；使用临时钩子配置后firefly-apt-fixture 1.0安装成功，其他钩子和持久配置检查均已越过。失败场景重复安装同一包，--no-upgrade使APT直接Skipping already installed，即使传--reinstall也没有执行钩子；因此测试自己的Expected required hook failure断言失败，不是安装器忽略了钩子错误。
+- tests/apt-deps.test.sh改为另建firefly-apt-failure-fixture本地无依赖新包，再启用失败钩子并调用原生产安装函数。仍要求APT退出100，并检查必要钩子实际被调用、新包未写入dpkg数据库、变更说明钩子未执行、前后APT配置一致。未删除或放宽失败检测，未改--no-upgrade或任何运行代码。
+- work/check-apt-container-syntax.mjs抽取Docker内heredoc，验证外层Bash、内层sh语法和二者ShellCheck warning级别全部通过。当前本机仍无Linux/Docker，没有声称新负例已实跑；完整Node未重复，因为仅改独立Shell测试，最新远端npm步骤已成功且之前本地158项通过。真实新包失败场景需要上传后CI执行。
+- 版本仍主控0.2.62/采集端0.2.7，更新完整/覆盖/latest包、发布镜像和交接文档。未推送GitHub、未运行生产SSH，不需要因此重装采集端。
